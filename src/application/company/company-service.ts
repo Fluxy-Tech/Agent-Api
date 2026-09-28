@@ -1,4 +1,6 @@
 import { randomBytes, randomInt, randomUUID } from "crypto";
+import { Prisma } from "../../../generated/prisma/client";
+import { isConfigurablePermission } from "../authorization/permission-matrix";
 import { isMemberRole } from "../../domain/enums/member-role";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { slugify } from "../../domain/utils/slug";
@@ -110,9 +112,37 @@ export const companyService = {
     const member = await prisma.member.findFirst({ where: { id: memberId, organizationId } });
     if (!member) throw new NotFoundError("Usuário não encontrado nesta empresa.");
 
+    // Trocar o papel zera as telas personalizadas: o usuário passa a seguir o
+    // padrão do novo papel (checkboxes podem ser ajustados de novo depois).
     return prisma.member.update({
       where: { id: member.id },
-      data: { role },
+      data: { role, permissions: Prisma.DbNull },
+      include: { user: { select: { id: true, name: true, email: true, image: true } } },
+    });
+  },
+
+  /// Tela de Acessos: telas que o usuário pode acessar/editar, marcadas por
+  /// checkbox. null volta ao padrão do papel. Só aceita ações configuráveis
+  /// (CONFIGURABLE_PERMISSIONS) — Acessos/empresas seguem presos ao papel.
+  async updateMemberPermissions(
+    user: AuthUser,
+    organizationId: string,
+    memberId: string,
+    permissions: string[] | null,
+  ) {
+    await this.getById(user, organizationId);
+
+    const member = await prisma.member.findFirst({ where: { id: memberId, organizationId } });
+    if (!member) throw new NotFoundError("Usuário não encontrado nesta empresa.");
+    if (member.userId === user.id) throw new ValidationError("Você não pode alterar as suas próprias permissões.");
+
+    if (permissions && !permissions.every(isConfigurablePermission)) {
+      throw new ValidationError("Permissão inválida.");
+    }
+
+    return prisma.member.update({
+      where: { id: member.id },
+      data: { permissions: permissions ? [...new Set(permissions)] : Prisma.DbNull },
       include: { user: { select: { id: true, name: true, email: true, image: true } } },
     });
   },
@@ -194,6 +224,23 @@ export const companyService = {
       include: { user: { select: { id: true, name: true, email: true } } },
       orderBy: { createdAt: "desc" },
     });
+  },
+
+  /// Exclui um código de convite ainda ativo. Convite já resgatado não pode
+  /// ser excluído — ele é o histórico de quem entrou por ele. O deleteMany com
+  /// finish=true no where segue o mesmo compare-and-swap do resgate: se o
+  /// convite for resgatado no meio da exclusão, count vem 0 e nada some.
+  async deleteInviteCode(user: AuthUser, organizationId: string, invitationId: string) {
+    await this.getById(user, organizationId);
+
+    const invitation = await prisma.invitationMember.findFirst({ where: { id: invitationId, organizationId } });
+    if (!invitation) throw new NotFoundError("Código de convite não encontrado.");
+    if (!invitation.finish) throw new ConflictError("Este convite já foi utilizado e não pode ser excluído.");
+
+    const deleted = await prisma.invitationMember.deleteMany({ where: { id: invitationId, organizationId, finish: true } });
+    if (deleted.count === 0) throw new ConflictError("Este convite já foi utilizado e não pode ser excluído.");
+
+    return invitation;
   },
 
   /// Resgate do código na tela de cadastro (signup): o code precisa existir,

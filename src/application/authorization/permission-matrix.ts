@@ -41,3 +41,41 @@ export const PERMISSION_MATRIX: Record<MemberRole, PermissionAction[]> = {
     PermissionAction.COMPANIES_MANAGE_OWN,
   ],
 };
+
+/// Ações que o Gerente pode ligar/desligar por usuário na tela de Acessos
+/// (Member.permissions). Acessos (ACCESS_*) e gestão de empresas ficam de
+/// fora de propósito: continuam presos ao papel, senão um checkbox viraria
+/// atalho pra escalar privilégio.
+export const CONFIGURABLE_PERMISSIONS: PermissionAction[] = [
+  PermissionAction.CONTACTS_VIEW,
+  PermissionAction.CONTACTS_WRITE,
+  PermissionAction.CAMPAIGNS_VIEW,
+  PermissionAction.CAMPAIGNS_WRITE,
+  PermissionAction.CRM_VIEW,
+  PermissionAction.CRM_WRITE,
+  PermissionAction.REPORTS_VIEW,
+  PermissionAction.AGENTS_VIEW,
+  PermissionAction.AGENTS_WRITE,
+  PermissionAction.WABAS_VIEW,
+  PermissionAction.WABAS_WRITE,
+  PermissionAction.SERVICE_ISLANDS_VIEW,
+  PermissionAction.SERVICE_ISLANDS_WRITE,
+  PermissionAction.QUEUES_VIEW,
+  PermissionAction.QUEUES_WRITE,
+];
+
+export function isConfigurablePermission(value: unknown): value is PermissionAction {
+  return CONFIGURABLE_PERMISSIONS.includes(value as PermissionAction);
+}
+
+/// Permissões efetivas de um membro: sem personalização (null) vale o papel;
+/// com personalização, as ações configuráveis vêm da lista salva e as não
+/// configuráveis (Acessos/empresas) continuam vindo do papel.
+export function resolvePermissions(role: MemberRole, custom: unknown): PermissionAction[] {
+  const byRole = PERMISSION_MATRIX[role];
+  if (!Array.isArray(custom)) return byRole;
+
+  const chosen = custom.filter(isConfigurablePermission);
+  const fixed = byRole.filter((action) => !CONFIGURABLE_PERMISSIONS.includes(action));
+  return [...new Set([...chosen, ...fixed])];
+}

@@ -166,6 +166,13 @@ model Member {
   /// então perde acesso a toda ação que exige PermissionAction nesta empresa.
   blocked Boolean @default(false)
 
+  /// Telas liberadas pra este usuário nesta empresa, escolhidas por checkbox
+  /// na tela de Acessos — lista de PermissionAction. null = segue o padrão
+  /// do papel (PERMISSION_MATRIX). Só cobre as ações configuráveis
+  /// (CONFIGURABLE_PERMISSIONS); Acessos/empresas continuam presos ao papel.
+  /// Ver resolvePermissions em application/authorization/permission-matrix.ts.
+  permissions Json?
+
   @@unique([organizationId, userId])
   @@index([organizationId])
   @@index([userId])

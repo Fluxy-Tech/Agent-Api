@@ -1,13 +1,13 @@
 import type { PermissionAction } from "../../domain/enums/permission-action";
 import { ForbiddenError } from "../../domain/errors/app-error";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
-import { PERMISSION_MATRIX } from "./permission-matrix";
-
 export const authorizationService = {
+  /// activePermissions já vem resolvido na sessão (papel + checkboxes da tela
+  /// de Acessos, ver resolvePermissions) — vazio quando não há papel ativo.
   can(user: AuthUser, action: PermissionAction): boolean {
     if (user.isPlatformAdmin) return true;
     if (!user.activeMemberRole) return false;
-    return PERMISSION_MATRIX[user.activeMemberRole].includes(action);
+    return user.activePermissions.includes(action);
   },
 
   assert(user: AuthUser, action: PermissionAction): void {

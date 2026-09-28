@@ -12,6 +12,7 @@ const createCompanySchema = z.object({
 
 const updateMemberRoleSchema = z.object({ role: z.string().min(1) });
 const updateMemberBlockedSchema = z.object({ blocked: z.boolean() });
+const updateMemberPermissionsSchema = z.object({ permissions: z.array(z.string()).nullable() });
 const generateInviteCodeSchema = z.object({ role: z.string().min(1), email: z.string().email() });
 const redeemInviteCodeSchema = z.object({ code: z.string().min(1) });
 
@@ -104,6 +105,50 @@ companiesRouter.put(
       resourceId: memberId,
       beforeState: before,
       afterState: updated,
+    });
+
+    return updated;
+  }),
+);
+
+/// Telas que o usuário pode acessar/editar (checkboxes da tela de Acessos).
+/// `permissions: null` volta ao padrão do papel. Mesma checagem manual de
+/// papel (GERENTE/admin) das outras rotas sensíveis desta empresa-alvo.
+companiesRouter.put(
+  "/:id/members/:memberId/permissions",
+  apiHandler({ requireCompany: false }, async (req, _res, user) => {
+    const parsed = updateMemberPermissionsSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const organizationId = String(req.params.id);
+
+    if (!user.isPlatformAdmin) {
+      const requesterMembership = await companyService
+        .listMembers(user, organizationId)
+        .then((members) => members.find((m) => m.userId === user.id));
+      if (requesterMembership?.role !== "GERENTE" || requesterMembership.blocked) {
+        throw new ForbiddenError("Apenas Gerente ou Administrador podem alterar permissões.");
+      }
+    }
+
+    const memberId = String(req.params.memberId);
+    const before = await companyService
+      .listMembers(user, organizationId)
+      .then((members) => members.find((m) => m.id === memberId));
+
+    const updated = await companyService.updateMemberPermissions(
+      user,
+      organizationId,
+      memberId,
+      parsed.data.permissions,
+    );
+
+    await recordAudit(req, user, {
+      action: "MEMBER_PERMISSIONS_UPDATED",
+      resourceType: "Member",
+      resourceId: memberId,
+      beforeState: before?.permissions ?? null,
+      afterState: updated.permissions ?? null,
     });
 
     return updated;
@@ -294,6 +339,36 @@ companiesRouter.post(
     });
 
     return invitation;
+  }),
+);
+
+/// Exclui um convite ainda não utilizado — mesma checagem manual de papel
+/// (GERENTE/admin) da geração/listagem de convites acima.
+companiesRouter.delete(
+  "/:id/invite-codes/:inviteId",
+  apiHandler({ requireCompany: false }, async (req, _res, user) => {
+    const organizationId = String(req.params.id);
+
+    if (!user.isPlatformAdmin) {
+      const requesterMembership = await companyService
+        .listMembers(user, organizationId)
+        .then((members) => members.find((m) => m.userId === user.id));
+      if (requesterMembership?.role !== "GERENTE" || requesterMembership.blocked) {
+        throw new ForbiddenError("Apenas Gerente ou Administrador podem excluir código de convite.");
+      }
+    }
+
+    const inviteId = String(req.params.inviteId);
+    const removed = await companyService.deleteInviteCode(user, organizationId, inviteId);
+
+    await recordAudit(req, user, {
+      action: "INVITE_CODE_DELETED",
+      resourceType: "InvitationMember",
+      resourceId: inviteId,
+      beforeState: { code: removed.code, role: removed.role, email: removed.email },
+    });
+
+    return { success: true };
   }),
 );
 
