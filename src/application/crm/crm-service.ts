@@ -230,6 +230,14 @@ export const crmService = {
     return { ...card, attachments, stages };
   },
 
+  /// Apaga o card e seus comentários (cascade). O contato (Target) continua —
+  /// só sai do Kanban; os anexos ficam no S3, igual ao removeAttachment.
+  async deleteCard(user: AuthUser, cardId: string) {
+    const card = await this.findCard(user, cardId);
+    await prisma.cardCrm.delete({ where: { id: card.id } });
+    return card;
+  },
+
   async updatePriority(user: AuthUser, cardId: string, input: UpdatePriorityInput) {
     const card = await this.findCard(user, cardId);
     return prisma.cardCrm.update({

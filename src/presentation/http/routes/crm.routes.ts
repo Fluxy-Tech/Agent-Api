@@ -92,6 +92,21 @@ crmRouter.get(
   }),
 );
 
+crmRouter.delete(
+  "/cards/:id",
+  apiHandler({ action: PermissionAction.CRM_WRITE }, async (req, _res, user) => {
+    const card = await crmService.deleteCard(user, String(req.params.id));
+    await recordAudit(req, user, {
+      action: "CRM_CARD_DELETED",
+      resourceType: "CardCrm",
+      resourceId: card.id,
+      beforeState: card,
+    });
+
+    return { id: card.id, deleted: true };
+  }),
+);
+
 crmRouter.patch(
   "/cards/:id/priority",
   apiHandler({ action: PermissionAction.CRM_WRITE }, async (req, _res, user) => {
