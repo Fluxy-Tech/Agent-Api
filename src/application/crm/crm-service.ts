@@ -1,3 +1,4 @@
+import type { CardPriority } from "../../../generated/prisma/client";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { prisma } from "../../infrastructure/database/prisma/client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
@@ -34,7 +35,7 @@ const CARD_TARGET_SELECT = {
 
 /// Toda empresa nasce com seu CrmToBusiness (ver company-service.ts#create) —
 /// este fallback só cobre empresas criadas antes dessa feature existir.
-async function getOrCreateCrm(organizationId: string) {
+export async function getOrCreateCrm(organizationId: string) {
   const existing = await prisma.crmToBusiness.findUnique({ where: { organizationId } });
   if (existing) return existing;
 
@@ -47,11 +48,32 @@ async function getOrCreateCrm(organizationId: string) {
   });
 }
 
-/// Cria o CardCrm do Target no estágio "Início" (isDefault) da empresa.
-/// Idempotente: se o Target já tem card, devolve o existente com
+/// Estágios (esteiras) do Kanban da empresa, na ordem da tela — sem os
+/// cards. Usado pelo seletor de estágio da função KANBAN_CARD e pelos
+/// agentes de IA (GET /internal/targets/:id/crm-stages).
+export async function listCrmStages(organizationId: string) {
+  const crm = await getOrCreateCrm(organizationId);
+  return prisma.stagesCrm.findMany({
+    where: { crmToBusinessId: crm.id },
+    orderBy: { position: "asc" },
+    select: { id: true, nameStage: true, position: true, isDefault: true },
+  });
+}
+
+interface CreateCardOptions {
+  description?: string;
+  priority?: CardPriority;
+  /// Estágio escolhido na função KANBAN_CARD — ignorado (cai no "Início")
+  /// se não for um estágio do CRM desta empresa.
+  stageId?: string | null;
+}
+
+/// Cria o CardCrm do Target no estágio pedido (ou no "Início", isDefault) da
+/// empresa. Idempotente: se o Target já tem card, devolve o existente com
 /// `created: false` — e, se veio `description` (agente de IA), atualiza só a
 /// descrição dele (nunca mexe em estágio/prioridade que o usuário já moveu).
-export async function createCardCrmForTarget(targetId: string, organizationId: string, description?: string) {
+export async function createCardCrmForTarget(targetId: string, organizationId: string, options: CreateCardOptions = {}) {
+  const { description, priority, stageId } = options;
   const crm = await getOrCreateCrm(organizationId);
 
   const existing = await prisma.cardCrm.findUnique({ where: { targetId } });
@@ -61,23 +83,36 @@ export async function createCardCrmForTarget(targetId: string, organizationId: s
     return { card, created: false };
   }
 
-  const inicio = await prisma.stagesCrm.findFirst({ where: { crmToBusinessId: crm.id, isDefault: true } });
-  if (!inicio) throw new ValidationError('O CRM da empresa não possui o estágio "Início".');
+  const escolhido = stageId
+    ? await prisma.stagesCrm.findFirst({ where: { id: stageId, crmToBusinessId: crm.id } })
+    : null;
+  const stage = escolhido ?? (await prisma.stagesCrm.findFirst({ where: { crmToBusinessId: crm.id, isDefault: true } }));
+  if (!stage) throw new ValidationError('O CRM da empresa não possui o estágio "Início".');
 
   const card = await prisma.cardCrm.create({
-    data: { targetId, crmToBusinessId: crm.id, stagesCrmId: inicio.id, description: description || null },
+    data: {
+      targetId,
+      crmToBusinessId: crm.id,
+      stagesCrmId: stage.id,
+      description: description || null,
+      ...(priority ? { statusPriority: priority } : {}),
+    },
   });
   return { card, created: true };
 }
 
 /// Comentário do agente de IA (função KANBAN_CARD) no card do Target — sem
 /// usuário (userId null), a tela mostra como "Agente de IA". Cria o card se
-/// o contato ainda não tiver um.
-export async function addAgentCommentForTarget(targetId: string, comment: string) {
+/// o contato ainda não tiver um (com `priority`/`stageId`, se vierem).
+export async function addAgentCommentForTarget(
+  targetId: string,
+  comment: string,
+  options: Pick<CreateCardOptions, "priority" | "stageId"> = {},
+) {
   const target = await prisma.target.findUnique({ where: { id: targetId }, select: { id: true, organizationId: true } });
   if (!target) throw new NotFoundError("Contato não encontrado.");
 
-  const { card, created } = await createCardCrmForTarget(target.id, target.organizationId);
+  const { card, created } = await createCardCrmForTarget(target.id, target.organizationId, options);
   const saved = await prisma.cardCrmComment.create({ data: { cardCrmId: card.id, userId: null, comment } });
   return { card, cardCreated: created, comment: saved };
 }
@@ -140,6 +175,18 @@ export const crmService = {
     const stage = await prisma.stagesCrm.findFirst({ where: { id: stageId, crmToBusinessId: crm.id } });
     if (!stage) throw new NotFoundError("Estágio não encontrado.");
     if (stage.isDefault) throw new ValidationError('O estágio "Início" não pode ser excluído.');
+
+    // Agente excluído (soft delete) não segura o estágio — o FK zera o vínculo.
+    const emUso = await prisma.agentFunction.findMany({
+      where: { crmStageId: stage.id, agent: { deletedAt: null } },
+      select: { agent: { select: { name: true } } },
+    });
+    if (emUso.length > 0) {
+      const agentes = emUso.map((f) => f.agent.name).join(", ");
+      throw new ValidationError(
+        `Este estágio está selecionado na função "Card no Kanban" do(s) agente(s) ${agentes}. Troque o estágio lá antes de excluir.`,
+      );
+    }
 
     await prisma.stagesCrm.delete({ where: { id: stage.id } });
     return stage;

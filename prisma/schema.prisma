@@ -278,6 +278,11 @@ model Agent {
   /// — só relevante quando ragEnabled=true.
   ragChunkSize Int?
 
+  /// Switch do card "Funções" do Agent Console: o que o AI-Worker faz quando
+  /// a coleta e as funções (AgentFunction) terminam — true = encaminha pro
+  /// atendimento humano; false = finaliza a conversa.
+  handoffAfterFunctions Boolean @default(false)
+
   /// Tokens de terceiro usados pelo AI-Worker deste agente especificamente —
   /// OpenAI (busca RAG) e Gemini (geração via ADK do Google). Sempre cifrados
   /// (AES-256-GCM, ver infrastructure/crypto/token-cipher.ts); nunca gravados
@@ -365,11 +370,19 @@ model AgentFunction {
   /// Executa depois que todos os metadados foram coletados.
   runAfterMetadata Boolean @default(false)
 
+  /// Só KANBAN_CARD: estágio do Kanban em que o card do lead nasce. null = o
+  /// estágio padrão ("Início"). O crm-service.ts#deleteStage bloqueia a
+  /// exclusão de um estágio selecionado aqui; o SetNull só cobre cascatas
+  /// (ex: exclusão da empresa).
+  crmStageId String?
+  crmStage   StagesCrm? @relation(fields: [crmStageId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([agentId, type])
   @@index([agentId])
+  @@index([crmStageId])
 }
 
 // ---------- RAG (BASE DE CONHECIMENTO) ----------
@@ -1091,6 +1104,9 @@ model StagesCrm {
   updatedAt DateTime @updatedAt
 
   cards CardCrm[]
+
+  /// Funções KANBAN_CARD de agentes que criam o card neste estágio.
+  agentFunctions AgentFunction[]
 
   @@unique([crmToBusinessId, position])
   @@index([crmToBusinessId])

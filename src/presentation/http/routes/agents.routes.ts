@@ -5,6 +5,7 @@ import { agentFunctionService } from "../../../application/agent-function/agent-
 import {
   agentFunctionTypeSchema,
   updateAgentFunctionSchema,
+  updateAgentFunctionSettingsSchema,
 } from "../../../application/agent-function/agent-function-validation";
 import { agentMetadataFieldService } from "../../../application/agent-metadata-field/agent-metadata-field-service";
 import { upsertAgentMetadataFieldSchema } from "../../../application/agent-metadata-field/agent-metadata-field-validation";
@@ -232,6 +233,40 @@ agentsRouter.get(
   "/:id/functions",
   apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
     return agentFunctionService.list(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.get(
+  "/:id/crm-stages",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentFunctionService.listCrmStages(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.get(
+  "/:id/function-settings",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentFunctionService.getSettings(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.put(
+  "/:id/function-settings",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = updateAgentFunctionSettingsSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const agentId = String(req.params.id);
+    const saved = await agentFunctionService.updateSettings(user, agentId, parsed.data);
+
+    await recordAudit(req, user, {
+      action: "AGENT_FUNCTION_SETTINGS_UPDATED",
+      resourceType: "Agent",
+      resourceId: agentId,
+      afterState: saved,
+    });
+
+    return saved;
   }),
 );
 

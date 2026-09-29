@@ -7,7 +7,7 @@ import {
   scheduleCalendarEventForTarget,
   updateCalendarEventForTarget,
 } from "../../../application/crm/crm-calendar-service";
-import { addAgentCommentForTarget, createCardCrmForTarget } from "../../../application/crm/crm-service";
+import { addAgentCommentForTarget, createCardCrmForTarget, listCrmStages } from "../../../application/crm/crm-service";
 import { env } from "../../../config/env";
 import { ragDocumentService } from "../../../application/rag-document/rag-document-service";
 import { AppError } from "../../../domain/errors/app-error";
@@ -73,6 +73,11 @@ const crmCardSchema = z.object({
 
 const crmCardCommentSchema = z.object({
   comment: z.string().trim().min(1).max(10000),
+  /// Prioridade do card quando o agente o cria (card já existente mantém a
+  /// que tiver — pode ter sido mudada por alguém na tela).
+  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+  /// Estágio em que o card nasce (AgentFunction.crmStageId) — mesma regra.
+  stageId: z.string().trim().min(1).nullable().optional(),
 });
 
 const calendarEventScheduleSchema = z.object({
@@ -287,7 +292,9 @@ internalRouter.post("/targets/:id/crm-card", async (req, res) => {
   }
 
   try {
-    const { card, created } = await createCardCrmForTarget(target.id, target.organizationId, parsed.data.description);
+    const { card, created } = await createCardCrmForTarget(target.id, target.organizationId, {
+      description: parsed.data.description,
+    });
     res.status(created ? 201 : 200).json({ success: true, result: { card, created }, message: null });
   } catch (error) {
     sendAppError(res, error, "Falha ao criar card no CRM.");
@@ -340,10 +347,32 @@ internalRouter.post("/targets/:id/crm-card/comments", async (req, res) => {
   }
 
   try {
-    const result = await addAgentCommentForTarget(String(req.params.id), parsed.data.comment);
+    const result = await addAgentCommentForTarget(String(req.params.id), parsed.data.comment, {
+      priority: parsed.data.priority,
+      stageId: parsed.data.stageId,
+    });
     res.status(201).json({ success: true, result, message: null });
   } catch (error) {
     sendAppError(res, error, "Falha ao comentar no card do CRM.");
+  }
+});
+
+/// Estágios (esteiras) do Kanban da empresa do contato — pros agentes de IA
+/// saberem quais existem. Ainda não ligado a nenhuma tool do AI-Worker.
+internalRouter.get("/targets/:id/crm-stages", async (req, res) => {
+  try {
+    const target = await prisma.target.findUnique({
+      where: { id: String(req.params.id) },
+      select: { organizationId: true },
+    });
+    if (!target) {
+      res.status(404).json({ success: false, result: null, message: "Contato não encontrado." });
+      return;
+    }
+    const stages = await listCrmStages(target.organizationId);
+    res.json({ success: true, result: stages, message: null });
+  } catch (error) {
+    sendAppError(res, error, "Falha ao listar os estágios do Kanban.");
   }
 });
 
