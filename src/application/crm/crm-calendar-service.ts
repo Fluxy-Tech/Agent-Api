@@ -1,4 +1,4 @@
-import { ForbiddenError, NotFoundError, ValidationError } from "../../domain/errors/app-error";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { prisma } from "../../infrastructure/database/prisma/client";
 import {
   calendarEventDocumentKeyPrefix,
@@ -79,6 +79,102 @@ export async function updateCalendarEventForTarget(
   });
 }
 
+/// Eventos não têm duração: para checar disponibilidade, cada evento ocupa
+/// 30 min a partir de dateEvent (dois eventos conflitam se começam a menos
+/// de 30 min um do outro).
+const EVENT_SLOT_MS = 30 * 60 * 1000;
+
+/// Função CALENDAR_EVENT do agente de IA: agenda (ou remarca `eventId`) um
+/// evento do Target num horário livre.
+/// - Com CrmSettings.calendarVisibleToAgent ligado e usuários permitidos:
+///   escolhe um desses usuários sem outro evento no horário (o com menos
+///   eventos no dia; na remarcação, mantém o atual se ele seguir livre) e
+///   vincula ao evento. Nenhum livre = ConflictError.
+/// - Senão: cria sem responsável, desde que não haja nenhum outro evento da
+///   empresa no horário.
+export async function scheduleCalendarEventForTarget(
+  targetId: string,
+  input: { name: string; description?: string | null; dateEvent: Date; eventId?: string },
+) {
+  const target = await prisma.target.findUnique({ where: { id: targetId }, select: { id: true, organizationId: true } });
+  if (!target) throw new NotFoundError("Contato não encontrado.");
+  const calendar = await getOrCreateCalendar(target.organizationId);
+
+  let existing: { id: string; userId: string | null } | null = null;
+  if (input.eventId) {
+    const event = await prisma.calendarEvent.findFirst({ where: { id: input.eventId, targetId: target.id } });
+    if (!event) throw new NotFoundError("Evento não encontrado.");
+    if (event.isClosed) throw new ValidationError("Evento encerrado — não pode mais ser alterado.");
+    existing = { id: event.id, userId: event.userId };
+  }
+
+  const start = input.dateEvent.getTime();
+  const conflicts = await prisma.calendarEvent.findMany({
+    where: {
+      calendarOrganizationId: calendar.id,
+      status: { not: "CANCELED" },
+      dateEvent: { gt: new Date(start - EVENT_SLOT_MS), lt: new Date(start + EVENT_SLOT_MS) },
+      ...(existing ? { id: { not: existing.id } } : {}),
+    },
+    select: { userId: true },
+  });
+
+  const settings = await prisma.crmSettings.findUnique({ where: { organizationId: target.organizationId } });
+  let allowedUserIds: string[] = [];
+  if (settings?.calendarVisibleToAgent && settings.calendarUserIds.length > 0) {
+    const members = await prisma.member.findMany({
+      where: { organizationId: target.organizationId, blocked: false, userId: { in: settings.calendarUserIds } },
+      select: { userId: true },
+    });
+    const memberIds = new Set(members.map((m) => m.userId));
+    allowedUserIds = settings.calendarUserIds.filter((id) => memberIds.has(id));
+  }
+
+  let userId: string | null = null;
+  if (allowedUserIds.length > 0) {
+    const busy = new Set(conflicts.map((c) => c.userId).filter((id): id is string => !!id));
+    const free = allowedUserIds.filter((id) => !busy.has(id));
+    if (free.length === 0) throw new ConflictError("Nenhum responsável está livre nesse dia e horário.");
+
+    if (existing?.userId && free.includes(existing.userId)) {
+      userId = existing.userId;
+    } else {
+      // Distribui a agenda: o responsável livre com menos eventos no dia.
+      const dayStart = new Date(input.dateEvent);
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEvents = await prisma.calendarEvent.groupBy({
+        by: ["userId"],
+        where: {
+          calendarOrganizationId: calendar.id,
+          status: { not: "CANCELED" },
+          userId: { in: free },
+          dateEvent: { gte: dayStart, lt: new Date(dayStart.getTime() + 24 * 60 * 60 * 1000) },
+        },
+        _count: { _all: true },
+      });
+      const load = new Map(dayEvents.map((e) => [e.userId, e._count._all]));
+      userId = [...free].sort((a, b) => (load.get(a) ?? 0) - (load.get(b) ?? 0))[0];
+    }
+  } else if (conflicts.length > 0) {
+    throw new ConflictError("Já existe outro evento agendado nesse dia e horário.");
+  }
+
+  const data = {
+    name: input.name,
+    description: input.description || null,
+    dateEvent: input.dateEvent,
+    userId,
+  };
+  const event = existing
+    ? await prisma.calendarEvent.update({ where: { id: existing.id }, data, include: { user: { select: { id: true, name: true } } } })
+    : await prisma.calendarEvent.create({
+        data: { ...data, calendarOrganizationId: calendar.id, targetId: target.id },
+        include: { user: { select: { id: true, name: true } } },
+      });
+
+  return { event, rescheduled: !!existing };
+}
+
 /// Eventos da empresa do Target dentro de [from, to] — pro agente de IA saber
 /// o que o contato já tem marcado e quais horários já estão ocupados. Eventos
 /// de OUTROS contatos voltam só com data/status (sem nome nem descrição), pra
@@ -151,6 +247,7 @@ export const crmCalendarService = {
       where: { id: existing.id },
       include: {
         target: { select: EVENT_TARGET_SELECT },
+        user: { select: { id: true, name: true } },
         annotations: { orderBy: { createdAt: "desc" }, include: { user: { select: { id: true, name: true } } } },
       },
     });

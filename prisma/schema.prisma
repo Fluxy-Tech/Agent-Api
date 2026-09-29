@@ -40,6 +40,7 @@ model User {
   assignedTickets           Ticket[]
   cardCrmComments           CardCrmComment[]
   calendarEventAnnotations  CalendarEventAnnotation[]
+  assignedCalendarEvents    CalendarEvent[]
   campaignsRoutedToMe       Campaign[]         @relation("CampaignRouteToUser")
 
   @@unique([email])
@@ -306,6 +307,7 @@ model Agent {
   ragDocuments     RagDocument[]
   campaigns        Campaign[]
   metadataFields   AgentMetadataField[]
+  functions        AgentFunction[]
 
   @@index([organizationId])
   @@index([defaultQueueId])
@@ -337,6 +339,36 @@ model AgentMetadataField {
   updatedAt DateTime @updatedAt
 
   @@unique([agentId, nameToAgent])
+  @@index([agentId])
+}
+
+/// Funções fixas que o agente pode executar (card "Funções" da aba
+/// Identidade do Agent Console). O comportamento de cada uma é fixo no
+/// AI-Worker/piloto; aqui só fica QUANDO ela roda.
+enum AgentFunctionType {
+  /// Coleta dia/horário com o contato e agenda um evento num horário livre.
+  CALENDAR_EVENT
+  /// Cria o card do contato no Kanban e comenta nele os dados da conversa.
+  KANBAN_CARD
+}
+
+/// Liga/desliga uma função fixa por agente. Sem linha = as duas desligadas.
+/// Os dois momentos são independentes e podem ficar ligados ao mesmo tempo.
+model AgentFunction {
+  id      String            @id @default(cuid())
+  agentId String
+  agent   Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  type    AgentFunctionType
+
+  /// Executa no início da conversa.
+  runAtStart       Boolean @default(false)
+  /// Executa depois que todos os metadados foram coletados.
+  runAfterMetadata Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([agentId, type])
   @@index([agentId])
 }
 
@@ -1106,13 +1138,15 @@ model CardCrm {
   @@index([stagesCrmId])
 }
 
-/// Comentário deixado por qualquer usuário da empresa no card do CRM.
+/// Comentário deixado por qualquer usuário da empresa no card do CRM — ou
+/// pelo agente de IA (função KANBAN_CARD), quando userId é null.
 model CardCrmComment {
   id        String   @id @default(cuid())
   cardCrmId String
   cardCrm   CardCrm  @relation(fields: [cardCrmId], references: [id], onDelete: Cascade)
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// null = comentário do agente de IA (ninguém pode editar/apagar pela tela).
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   comment   String
   createdAt DateTime @default(now())
   /// Muda a cada edição do autor — o Agent Console mostra "(editado)" quando
@@ -1209,6 +1243,12 @@ model CalendarEvent {
   targetId               String
   target                 Target               @relation(fields: [targetId], references: [id], onDelete: Cascade)
 
+  /// Usuário da empresa responsável pelo evento — escolhido pelo agente de
+  /// IA entre CrmSettings.calendarUserIds livres no horário (função
+  /// CALENDAR_EVENT). null = sem responsável.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
   dateEvent   DateTime
   name        String
   description String?
@@ -1227,6 +1267,7 @@ model CalendarEvent {
 
   @@index([calendarOrganizationId, dateEvent])
   @@index([targetId])
+  @@index([userId])
 }
 
 /// Anotação deixada por um usuário no evento — editar/apagar só pelo autor.

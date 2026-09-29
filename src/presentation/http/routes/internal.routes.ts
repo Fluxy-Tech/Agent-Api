@@ -4,9 +4,10 @@ import { campaignService } from "../../../application/campaign/campaign-service"
 import {
   createCalendarEventForTarget,
   listCalendarEventsForTarget,
+  scheduleCalendarEventForTarget,
   updateCalendarEventForTarget,
 } from "../../../application/crm/crm-calendar-service";
-import { createCardCrmForTarget } from "../../../application/crm/crm-service";
+import { addAgentCommentForTarget, createCardCrmForTarget } from "../../../application/crm/crm-service";
 import { env } from "../../../config/env";
 import { ragDocumentService } from "../../../application/rag-document/rag-document-service";
 import { AppError } from "../../../domain/errors/app-error";
@@ -68,6 +69,17 @@ const messageLogBatchSchema = z.object({
 
 const crmCardSchema = z.object({
   description: z.string().trim().max(5000).optional(),
+});
+
+const crmCardCommentSchema = z.object({
+  comment: z.string().trim().min(1).max(10000),
+});
+
+const calendarEventScheduleSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(5000).optional(),
+  dateEvent: z.coerce.date(),
+  eventId: z.string().trim().min(1).optional(),
 });
 
 const calendarEventCreateSchema = z.object({
@@ -296,6 +308,42 @@ internalRouter.post("/targets/:id/calendar-events", async (req, res) => {
     res.status(201).json({ success: true, result: event, message: null });
   } catch (error) {
     sendAppError(res, error, "Falha ao criar evento.");
+  }
+});
+
+/// Função CALENDAR_EVENT do agente de IA: agenda (ou remarca eventId) num
+/// horário livre, escolhendo um responsável entre os usuários liberados na
+/// aba Configurações do Kanban. 409 = horário indisponível (a mensagem diz
+/// o motivo, pro agente pedir outro horário ao contato).
+internalRouter.post("/targets/:id/calendar-events/schedule", async (req, res) => {
+  const parsed = calendarEventScheduleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ success: false, result: null, message: "Dados inválidos.", errors: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const result = await scheduleCalendarEventForTarget(String(req.params.id), parsed.data);
+    res.status(result.rescheduled ? 200 : 201).json({ success: true, result, message: null });
+  } catch (error) {
+    sendAppError(res, error, "Falha ao agendar evento.");
+  }
+});
+
+/// Função KANBAN_CARD do agente de IA: comenta no card do contato (cria o
+/// card se ainda não existir). Comentário sem usuário = "Agente de IA".
+internalRouter.post("/targets/:id/crm-card/comments", async (req, res) => {
+  const parsed = crmCardCommentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ success: false, result: null, message: "Dados inválidos." });
+    return;
+  }
+
+  try {
+    const result = await addAgentCommentForTarget(String(req.params.id), parsed.data.comment);
+    res.status(201).json({ success: true, result, message: null });
+  } catch (error) {
+    sendAppError(res, error, "Falha ao comentar no card do CRM.");
   }
 });
 

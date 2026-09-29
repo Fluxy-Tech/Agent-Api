@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { agentService } from "../../../application/agent/agent-service";
 import { createAgentSchema, listAgentsQuerySchema, updateAgentSchema } from "../../../application/agent/agent-validation";
+import { agentFunctionService } from "../../../application/agent-function/agent-function-service";
+import {
+  agentFunctionTypeSchema,
+  updateAgentFunctionSchema,
+} from "../../../application/agent-function/agent-function-validation";
 import { agentMetadataFieldService } from "../../../application/agent-metadata-field/agent-metadata-field-service";
 import { upsertAgentMetadataFieldSchema } from "../../../application/agent-metadata-field/agent-metadata-field-validation";
 import { ragDocumentService } from "../../../application/rag-document/rag-document-service";
@@ -220,5 +225,34 @@ agentsRouter.delete(
     });
 
     return { deleted: true };
+  }),
+);
+
+agentsRouter.get(
+  "/:id/functions",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentFunctionService.list(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.put(
+  "/:id/functions/:type",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const type = agentFunctionTypeSchema.safeParse(req.params.type);
+    if (!type.success) throw new ValidationError("Função inválida.");
+    const parsed = updateAgentFunctionSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const agentId = String(req.params.id);
+    const saved = await agentFunctionService.update(user, agentId, type.data, parsed.data);
+
+    await recordAudit(req, user, {
+      action: "AGENT_FUNCTION_UPDATED",
+      resourceType: "AgentFunction",
+      resourceId: agentId,
+      afterState: saved,
+    });
+
+    return saved;
   }),
 );

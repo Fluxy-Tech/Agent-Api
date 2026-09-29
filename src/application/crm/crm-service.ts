@@ -70,6 +70,18 @@ export async function createCardCrmForTarget(targetId: string, organizationId: s
   return { card, created: true };
 }
 
+/// Comentário do agente de IA (função KANBAN_CARD) no card do Target — sem
+/// usuário (userId null), a tela mostra como "Agente de IA". Cria o card se
+/// o contato ainda não tiver um.
+export async function addAgentCommentForTarget(targetId: string, comment: string) {
+  const target = await prisma.target.findUnique({ where: { id: targetId }, select: { id: true, organizationId: true } });
+  if (!target) throw new NotFoundError("Contato não encontrado.");
+
+  const { card, created } = await createCardCrmForTarget(target.id, target.organizationId);
+  const saved = await prisma.cardCrmComment.create({ data: { cardCrmId: card.id, userId: null, comment } });
+  return { card, cardCreated: created, comment: saved };
+}
+
 export const crmService = {
   async getBoard(user: AuthUser) {
     const crm = await getOrCreateCrm(user.activeOrganizationId!);
