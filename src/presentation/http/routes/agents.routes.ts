@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { agentService } from "../../../application/agent/agent-service";
 import { createAgentSchema, listAgentsQuerySchema, updateAgentSchema } from "../../../application/agent/agent-validation";
+import { agentMetadataFieldService } from "../../../application/agent-metadata-field/agent-metadata-field-service";
+import { upsertAgentMetadataFieldSchema } from "../../../application/agent-metadata-field/agent-metadata-field-validation";
 import { ragDocumentService } from "../../../application/rag-document/rag-document-service";
 import {
   createRagDocumentSchema,
@@ -152,6 +154,71 @@ agentsRouter.delete(
   "/:id/rag/documents/:documentId",
   apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
     await ragDocumentService.delete(user, String(req.params.id), String(req.params.documentId));
+    return { deleted: true };
+  }),
+);
+
+agentsRouter.get(
+  "/:id/metadata-fields",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentMetadataFieldService.list(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.post(
+  "/:id/metadata-fields",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = upsertAgentMetadataFieldSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const field = await agentMetadataFieldService.create(user, String(req.params.id), parsed.data);
+
+    await recordAudit(req, user, {
+      action: "AGENT_METADATA_FIELD_CREATED",
+      resourceType: "AgentMetadataField",
+      resourceId: field.id,
+      afterState: field,
+    });
+
+    return field;
+  }),
+);
+
+agentsRouter.put(
+  "/:id/metadata-fields/:fieldId",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = upsertAgentMetadataFieldSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const agentId = String(req.params.id);
+    const fieldId = String(req.params.fieldId);
+    const before = await agentMetadataFieldService.getById(user, agentId, fieldId);
+    const field = await agentMetadataFieldService.update(user, agentId, fieldId, parsed.data);
+
+    await recordAudit(req, user, {
+      action: "AGENT_METADATA_FIELD_UPDATED",
+      resourceType: "AgentMetadataField",
+      resourceId: field.id,
+      beforeState: before,
+      afterState: field,
+    });
+
+    return field;
+  }),
+);
+
+agentsRouter.delete(
+  "/:id/metadata-fields/:fieldId",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const field = await agentMetadataFieldService.remove(user, String(req.params.id), String(req.params.fieldId));
+
+    await recordAudit(req, user, {
+      action: "AGENT_METADATA_FIELD_DELETED",
+      resourceType: "AgentMetadataField",
+      resourceId: field.id,
+      beforeState: field,
+    });
+
     return { deleted: true };
   }),
 );

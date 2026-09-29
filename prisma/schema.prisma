@@ -304,9 +304,39 @@ model Agent {
   whatsappChannels Channel[]
   ragDocuments     RagDocument[]
   campaigns        Campaign[]
+  metadataFields   AgentMetadataField[]
 
   @@index([organizationId])
   @@index([defaultQueueId])
+}
+
+// ---------- METADADOS DO AGENTE ----------
+
+/// Dado que o agente deve coletar do contato durante a conversa (configurado
+/// no card "Metadados" da aba Identidade do Agent Console). Hoje só o
+/// AI-Worker/piloto usa: recebe os ativos no payload (Inbound-Service,
+/// agentPayload.metadataFields) e grava o valor coletado em
+/// Target.metadata[nameToAgent].
+model AgentMetadataField {
+  id      String @id @default(cuid())
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// Nome como o usuário digitou (ex: "Cidade de interesse").
+  name        String
+  /// Chave derivada de name (minúsculas, sem acento, espaços -> _) — é a
+  /// chave usada em Target.metadata. Gerada pela API, nunca pelo front.
+  nameToAgent String
+  /// Regra em texto livre de como o agente deve coletar esse dado.
+  rule        String
+  /// false = continua cadastrado mas o agente para de coletar.
+  active      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([agentId, nameToAgent])
+  @@index([agentId])
 }
 
 // ---------- RAG (BASE DE CONHECIMENTO) ----------
