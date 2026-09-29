@@ -23,9 +23,8 @@ export const companyService = {
   /// criação de organização do Better Auth, pra garantir que o Member nasça com
   /// um valor válido do nosso union type de papéis, não o default do plugin.
   /// Toda empresa já nasce com seu CRM (CrmToBusiness) e o estágio "Início"
-  /// (isDefault=true, position=1) — ver crm-service.ts e Inbound-Service/src/
-  /// application/webhook/crm-card-service.ts, que depende desse estágio existir
-  /// pra todo lead novo cair nele.
+  /// (isDefault=true, position=1) — ver crm-service.ts#createCardCrmForTarget,
+  /// que depende desse estágio existir pra todo lead novo cair nele.
   async create(user: AuthUser, input: { name: string; cnpj: string }) {
     return prisma.$transaction(async (tx) => {
       const organization = await tx.organization.create({

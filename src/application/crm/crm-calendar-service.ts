@@ -36,6 +36,84 @@ async function assertTargetBelongsToOrganization(targetId: string, organizationI
   if (!target) throw new ValidationError("Contato inválido para esta empresa.");
 }
 
+/// Cria um evento pro Target sem sessão de usuário — usado pelo agente de IA
+/// (POST /internal/targets/:id/calendar-events). A empresa vem do próprio
+/// Target, então não tem como cair no calendário de outra organização.
+export async function createCalendarEventForTarget(
+  targetId: string,
+  input: { name: string; description?: string | null; dateEvent: Date },
+) {
+  const target = await prisma.target.findUnique({ where: { id: targetId }, select: { id: true, organizationId: true } });
+  if (!target) throw new NotFoundError("Contato não encontrado.");
+  const calendar = await getOrCreateCalendar(target.organizationId);
+
+  return prisma.calendarEvent.create({
+    data: {
+      calendarOrganizationId: calendar.id,
+      targetId: target.id,
+      name: input.name,
+      description: input.description || null,
+      dateEvent: input.dateEvent,
+    },
+  });
+}
+
+/// Remarca/edita um evento do próprio Target — só enquanto não estiver
+/// encerrado (mesma trava da tela, ver crmCalendarService.updateEvent).
+export async function updateCalendarEventForTarget(
+  targetId: string,
+  eventId: string,
+  input: { name?: string; description?: string | null; dateEvent?: Date },
+) {
+  const event = await prisma.calendarEvent.findFirst({ where: { id: eventId, targetId } });
+  if (!event) throw new NotFoundError("Evento não encontrado.");
+  if (event.isClosed) throw new ValidationError("Evento encerrado — não pode mais ser alterado.");
+
+  return prisma.calendarEvent.update({
+    where: { id: event.id },
+    data: {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.description !== undefined ? { description: input.description || null } : {}),
+      ...(input.dateEvent !== undefined ? { dateEvent: input.dateEvent } : {}),
+    },
+  });
+}
+
+/// Eventos da empresa do Target dentro de [from, to] — pro agente de IA saber
+/// o que o contato já tem marcado e quais horários já estão ocupados. Eventos
+/// de OUTROS contatos voltam só com data/status (sem nome nem descrição), pra
+/// o agente nunca repassar dado de um lead pra outro.
+export async function listCalendarEventsForTarget(targetId: string, from: Date, to: Date) {
+  if (to.getTime() < from.getTime()) throw new ValidationError("A data final precisa ser depois da inicial.");
+  if (to.getTime() - from.getTime() > MAX_RANGE_MS) throw new ValidationError("Período muito longo (máx. 62 dias).");
+
+  const target = await prisma.target.findUnique({ where: { id: targetId }, select: { id: true, organizationId: true } });
+  if (!target) throw new NotFoundError("Contato não encontrado.");
+  const calendar = await getOrCreateCalendar(target.organizationId);
+
+  const events = await prisma.calendarEvent.findMany({
+    where: { calendarOrganizationId: calendar.id, dateEvent: { gte: from, lte: to } },
+    select: { id: true, targetId: true, name: true, description: true, dateEvent: true, status: true, isClosed: true },
+    orderBy: { dateEvent: "asc" },
+  });
+
+  return {
+    contactEvents: events
+      .filter((e) => e.targetId === target.id)
+      .map((e) => ({
+        id: e.id,
+        name: e.name,
+        description: e.description,
+        dateEvent: e.dateEvent,
+        status: e.status,
+        isClosed: e.isClosed,
+      })),
+    busySlots: events
+      .filter((e) => e.targetId !== target.id && e.status !== "CANCELED")
+      .map((e) => ({ dateEvent: e.dateEvent, status: e.status })),
+  };
+}
+
 export const crmCalendarService = {
   /// Eventos da empresa ativa dentro de [from, to] — só o resumo que a grade
   /// do calendário precisa; o detalhe vem de getEvent.

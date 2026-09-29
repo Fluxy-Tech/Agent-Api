@@ -49,18 +49,23 @@ async function getOrCreateCrm(organizationId: string) {
 
 /// Cria o CardCrm do Target no estágio "Início" (isDefault) da empresa.
 /// Idempotente: se o Target já tem card, devolve o existente com
-/// `created: false` (mesma regra de Inbound-Service/crm-card-service.ts).
-export async function createCardCrmForTarget(targetId: string, organizationId: string) {
+/// `created: false` — e, se veio `description` (agente de IA), atualiza só a
+/// descrição dele (nunca mexe em estágio/prioridade que o usuário já moveu).
+export async function createCardCrmForTarget(targetId: string, organizationId: string, description?: string) {
   const crm = await getOrCreateCrm(organizationId);
 
   const existing = await prisma.cardCrm.findUnique({ where: { targetId } });
-  if (existing) return { card: existing, created: false };
+  if (existing) {
+    if (!description || description === existing.description) return { card: existing, created: false };
+    const card = await prisma.cardCrm.update({ where: { id: existing.id }, data: { description } });
+    return { card, created: false };
+  }
 
   const inicio = await prisma.stagesCrm.findFirst({ where: { crmToBusinessId: crm.id, isDefault: true } });
   if (!inicio) throw new ValidationError('O CRM da empresa não possui o estágio "Início".');
 
   const card = await prisma.cardCrm.create({
-    data: { targetId, crmToBusinessId: crm.id, stagesCrmId: inicio.id },
+    data: { targetId, crmToBusinessId: crm.id, stagesCrmId: inicio.id, description: description || null },
   });
   return { card, created: true };
 }
@@ -114,7 +119,7 @@ export const crmService = {
   },
 
   /// O estágio "Início" (isDefault) nunca pode ser excluído — todo lead novo
-  /// depende dele existir (ver Inbound-Service/crm-card-service.ts). Cards do
+  /// depende dele existir (ver createCardCrmForTarget). Cards do
   /// estágio excluído ficam sem estágio (stagesCrmId vira null, onDelete:
   /// SetNull no schema), não são apagados.
   async deleteStage(user: AuthUser, stageId: string) {
