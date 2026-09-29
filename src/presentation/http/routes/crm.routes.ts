@@ -2,6 +2,7 @@ import { Router } from "express";
 import { crmCalendarService } from "../../../application/crm/crm-calendar-service";
 import { crmFunnelService } from "../../../application/crm/crm-funnel-service";
 import { crmService } from "../../../application/crm/crm-service";
+import { crmSettingsService } from "../../../application/crm/crm-settings-service";
 import {
   addAttachmentSchema,
   calendarAnnotationSchema,
@@ -16,6 +17,7 @@ import {
   removeAttachmentQuerySchema,
   updatePrioritySchema,
   updateCalendarEventSchema,
+  updateCrmSettingsSchema,
   updateStageSchema,
 } from "../../../application/crm/crm-validation";
 import { PermissionAction } from "../../../domain/enums/permission-action";
@@ -206,6 +208,34 @@ crmRouter.patch(
 );
 
 // ---------- FUNIL DE CONVERSÕES ----------
+
+crmRouter.get(
+  "/settings",
+  apiHandler({ action: PermissionAction.CRM_VIEW }, async (_req, _res, user) => {
+    return crmSettingsService.get(user);
+  }),
+);
+
+crmRouter.put(
+  "/settings",
+  apiHandler({ action: PermissionAction.CRM_WRITE }, async (req, _res, user) => {
+    const parsed = updateCrmSettingsSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const before = await crmSettingsService.get(user);
+    const settings = await crmSettingsService.update(user, parsed.data);
+
+    await recordAudit(req, user, {
+      action: "CRM_SETTINGS_UPDATED",
+      resourceType: "CrmSettings",
+      resourceId: user.activeOrganizationId!,
+      beforeState: { calendar: before.calendar, kanban: before.kanban },
+      afterState: { calendar: settings.calendar, kanban: settings.kanban },
+    });
+
+    return settings;
+  }),
+);
 
 crmRouter.get(
   "/funnel",

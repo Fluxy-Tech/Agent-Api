@@ -95,3 +95,18 @@ export const calendarTargetSearchQuerySchema = z.object({
 export type CreateCalendarEventInput = z.infer<typeof createCalendarEventSchema>;
 export type UpdateCalendarEventInput = z.infer<typeof updateCalendarEventSchema>;
 export type CalendarAnnotationInput = z.infer<typeof calendarAnnotationSchema>;
+
+export const updateCrmSettingsSchema = z.object({
+  calendar: z.object({
+    userIds: z.array(z.string().trim().min(1)),
+    visibleToAgent: z.boolean(),
+  }),
+  kanban: z.object({
+    userIds: z.array(z.string().trim().min(1)),
+    /// null = sem limite de cards por usuário.
+    maxCardsPerUser: z.number().int().min(1, "O limite precisa ser de pelo menos 1 card.").nullable(),
+    visibleToAgent: z.boolean(),
+  }),
+});
+
+export type UpdateCrmSettingsInput = z.infer<typeof updateCrmSettingsSchema>;

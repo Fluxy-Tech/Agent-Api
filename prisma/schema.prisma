@@ -124,6 +124,7 @@ model Organization {
   crmToBusiness     CrmToBusiness?
   funil             Funil?
   calendar          CalendarOrganization?
+  crmSettings       CrmSettings?
 
   @@unique([slug])
   @@map("organization")
@@ -1151,6 +1152,32 @@ model FieldsFunil {
   updatedAt DateTime @updatedAt
 
   @@index([funilId])
+}
+
+/// Configurações do Kanban Board (aba "Configurações") — 1:1 com
+/// Organization, criada sob demanda na primeira leitura (ver
+/// crm-settings-service.ts#getOrCreateSettings). Os *UserIds são User.id de
+/// membros da empresa; quem sai da empresa é filtrado na leitura, então não
+/// precisam de FK.
+model CrmSettings {
+  id             String       @id @default(cuid())
+  organizationId String       @unique
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Usuários que podem ser inseridos em eventos do calendário.
+  calendarUserIds        String[] @default([])
+  /// Se o agente de IA pode ver esses usuários do calendário.
+  calendarVisibleToAgent Boolean  @default(false)
+
+  /// Usuários que podem ser inseridos nos cards do Kanban.
+  kanbanUserIds          String[] @default([])
+  /// Quantos cards do Kanban um mesmo usuário pode ter. null = sem limite.
+  kanbanMaxCardsPerUser  Int?
+  /// Se o agente de IA pode ver esses usuários do Kanban.
+  kanbanVisibleToAgent   Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// Calendário de eventos da empresa (aba "Calendário" do Kanban Board) —
