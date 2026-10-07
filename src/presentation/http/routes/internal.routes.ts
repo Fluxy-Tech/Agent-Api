@@ -1,5 +1,7 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
+import { agentTokenService } from "../../../application/agent-token/agent-token-service";
+import { recordTokensSchema } from "../../../application/agent-token/agent-token-validation";
 import { campaignService } from "../../../application/campaign/campaign-service";
 import {
   createCalendarEventForTarget,
@@ -426,6 +428,24 @@ internalRouter.post("/message-logs", async (req, res) => {
 
   await prisma.messageLog.createMany({ data: parsed.data.logs });
   res.status(202).json({ success: true, result: null, message: null });
+});
+
+/// Usada pelo AI-Worker pra registrar o consumo de tokens de cada chamada de
+/// LLM feita em nome do agente (ADK/Gemini ou OpenAI) — alimenta as métricas
+/// de consumo da tela de Agentes do Agent Console.
+internalRouter.post("/agents/:id/tokens", async (req, res) => {
+  const parsed = recordTokensSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ success: false, result: null, message: "Dados inválidos." });
+    return;
+  }
+
+  try {
+    await agentTokenService.record(String(req.params.id), parsed.data);
+    res.status(202).json({ success: true, result: null, message: null });
+  } catch (error) {
+    sendAppError(res, error, "Falha ao registrar consumo de tokens.");
+  }
 });
 
 /// Chamada pelo worker Python (AI-Worker/max) ao terminar de processar (ou

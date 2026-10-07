@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../../config/env";
 
@@ -88,6 +88,45 @@ export async function createCalendarEventDocumentUploadUrl(input: {
   );
 
   return { uploadUrl, s3Key };
+}
+
+/// Prefixo dos anexos de suporte técnico — por empresa (não por chamado),
+/// porque na abertura o chamado ainda não existe quando o upload acontece.
+/// Usado pra gerar a chave e pra validar (support-ticket-service.ts) que a
+/// chave confirmada pelo front é mesmo da empresa do chamado.
+export function supportAttachmentKeyPrefix(organizationId: string): string {
+  return `${env.SEAWEEDFS_S3_PREFIX}/support-attachments/${organizationId}/`;
+}
+
+/// URL presignada de PUT pro anexo de um chamado de suporte ir direto do
+/// navegador pro S3 (mesmo fluxo do anexo de card do CRM).
+export async function createSupportAttachmentUploadUrl(input: {
+  organizationId: string;
+  fileName: string;
+  contentType: string;
+}): Promise<{ uploadUrl: string; s3Key: string }> {
+  const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const s3Key = `${supportAttachmentKeyPrefix(input.organizationId)}${Date.now()}-${safeFileName}`;
+
+  const uploadUrl = await getSignedUrl(
+    client,
+    new PutObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key, ContentType: input.contentType }),
+    { expiresIn: 300 },
+  );
+
+  return { uploadUrl, s3Key };
+}
+
+/// Metadados reais do objeto já enviado — confirma que o upload aconteceu e
+/// devolve o tamanho de verdade (o declarado pelo front não vale como prova).
+/// null quando o objeto não existe.
+export async function headObject(s3Key: string): Promise<{ size: number; contentType: string | null } | null> {
+  try {
+    const head = await client.send(new HeadObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key }));
+    return { size: head.ContentLength ?? 0, contentType: head.ContentType ?? null };
+  } catch {
+    return null;
+  }
 }
 
 /// URL presignada de leitura (1h) — o bucket não precisa ser público.

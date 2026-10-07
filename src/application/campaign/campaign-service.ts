@@ -5,7 +5,12 @@ import { sendCampaignToWorker } from "../../infrastructure/campaign-worker/campa
 import { prisma } from "../../infrastructure/database/prisma/client";
 import { listWabaTemplates } from "../../infrastructure/meta/meta-graph-client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
-import type { CreateCampaignInput, ListCampaignsFilter, ListCampaignsQuery } from "./campaign-validation";
+import type {
+  CreateCampaignInput,
+  ListCampaignsFilter,
+  ListCampaignsQuery,
+  UpdateCampaignDestinationInput,
+} from "./campaign-validation";
 
 function buildCampaignWhere(user: AuthUser, filter: ListCampaignsFilter): Prisma.CampaignWhereInput {
   return {
@@ -101,8 +106,18 @@ export interface DispatchInput {
   /// Usado pelo disparo ativo do Desk — suprime a transferMessage genérica do
   /// agente quando o ticket nasce a partir desse disparo.
   skipTransferMessage?: boolean;
+  /// Disparo escalonado: se batchSize/batchIntervalMinutes ou scheduledAt
+  /// vierem, a lista NÃO vai pra fila do Campaign-Worker — fica em
+  /// CampaignPendingContact e o scheduler do worker envia os lotes.
+  batchSize?: number;
+  batchIntervalMinutes?: number;
+  scheduledAt?: Date;
   contacts: DispatchContactInput[];
 }
+
+/// Inserção da lista de contatos em pedaços — CSVs grandes estourariam o
+/// limite de parâmetros do Postgres num único INSERT.
+const PENDING_CONTACTS_CHUNK_SIZE = 1000;
 
 export const campaignService = {
   /// Ponto único de disparo ativo de template — usado pelo fluxo de sessão
@@ -144,6 +159,55 @@ export const campaignService = {
 
       category = category ?? matches[0].category;
       language = language ?? matches[0].language;
+    }
+
+    const isScheduled = Boolean(params.batchSize || params.scheduledAt);
+    if (isScheduled) {
+      const campaign = await prisma.$transaction(
+        async (tx) => {
+          const created = await tx.campaign.create({
+            data: {
+              organizationId: params.organizationId,
+              whatsappChannelId: channel.id,
+              agentId: channel.agent.id,
+              name: params.campaignName,
+              category,
+              templateName: params.templateName,
+              language,
+              dispatchType: params.dispatchType ?? "MANUAL",
+              expectedContacts: params.contacts.length,
+              createdByUserId: params.createdByUserId,
+              createdByName: params.createdByName,
+              createdByEmail: params.createdByEmail,
+              routeToQueueId: params.routeToQueueId,
+              routeToUserId: params.routeToUserId,
+              templateHeaderText: params.templateHeaderText,
+              templateBodyText: params.templateBodyText,
+              // Agendamento sem lote (ex: disparo manual agendado) = manda
+              // tudo de uma vez quando chegar a hora.
+              batchSize: params.batchSize ?? params.contacts.length,
+              batchIntervalMinutes: params.batchIntervalMinutes ?? 1,
+              scheduledAt: params.scheduledAt,
+              nextBatchAt: params.scheduledAt ?? new Date(),
+            },
+          });
+
+          for (let i = 0; i < params.contacts.length; i += PENDING_CONTACTS_CHUNK_SIZE) {
+            await tx.campaignPendingContact.createMany({
+              data: params.contacts.slice(i, i + PENDING_CONTACTS_CHUNK_SIZE).map((contact, j) => ({
+                campaignId: created.id,
+                position: i + j,
+                contact: contact as unknown as Prisma.InputJsonValue,
+              })),
+            });
+          }
+
+          return created;
+        },
+        { timeout: 60_000 },
+      );
+
+      return this.toListItem(campaign, channel.displayNumber, channel.agent.name);
     }
 
     const campaign = await prisma.campaign.create({
@@ -247,8 +311,64 @@ export const campaignService = {
       createdByUserId: user.id,
       createdByName: user.name,
       createdByEmail: user.email,
+      batchSize: input.batchSize,
+      batchIntervalMinutes: input.batchIntervalMinutes,
+      scheduledAt: input.scheduledAt,
       contacts,
     });
+  },
+
+  /// Pausa/retoma um disparo escalonado. Retomar não mexe em nextBatchAt: se
+  /// o horário do próximo lote já passou, o scheduler pega no próximo tick;
+  /// se não, respeita o intervalo que faltava.
+  async setActive(user: AuthUser, id: string, active: boolean) {
+    const campaign = await this.findScheduledCampaign(user, id);
+    if (campaign.status === "COMPLETED") throw new ValidationError("Esta campanha já foi concluída.");
+
+    if (active) {
+      // O destino pode ter sido alterado enquanto pausada — revalida antes de
+      // voltar a disparar (fila/atendente podem ter sido removidos).
+      await assertRouteToHumanIsValid(
+        campaign.whatsappChannel.serviceIsland!.id,
+        campaign.routeToQueueId ?? undefined,
+        campaign.routeToUserId ?? undefined,
+      );
+    }
+
+    await prisma.campaign.update({ where: { id: campaign.id }, data: { active } });
+    return this.getById(user, id);
+  },
+
+  /// Troca o destino dos contatos que ainda vão ser disparados — Agente de IA
+  /// (sem fila) ou Atendimento humano (fila + atendente opcional). Só com a
+  /// campanha pausada, pra não mudar o destino no meio de um lote.
+  async updateDestination(user: AuthUser, id: string, input: UpdateCampaignDestinationInput) {
+    const campaign = await this.findScheduledCampaign(user, id);
+    if (campaign.status === "COMPLETED") throw new ValidationError("Esta campanha já foi concluída.");
+    if (campaign.active) throw new ValidationError("Pause a campanha antes de alterar o destino.");
+
+    const routeToQueueId = input.routeToQueueId ?? undefined;
+    const routeToUserId = routeToQueueId ? (input.routeToUserId ?? undefined) : undefined;
+    await assertRouteToHumanIsValid(campaign.whatsappChannel.serviceIsland!.id, routeToQueueId, routeToUserId);
+
+    await prisma.campaign.update({
+      where: { id: campaign.id },
+      data: { routeToQueueId: routeToQueueId ?? null, routeToUserId: routeToUserId ?? null },
+    });
+    return this.getById(user, id);
+  },
+
+  async findScheduledCampaign(user: AuthUser, id: string) {
+    const campaign = await prisma.campaign.findFirst({
+      where: { id, organizationId: user.activeOrganizationId! },
+      include: { whatsappChannel: { include: { serviceIsland: true } } },
+    });
+    if (!campaign) throw new NotFoundError("Campanha não encontrada.");
+    if (campaign.batchSize === null) {
+      throw new ValidationError("Apenas campanhas com disparo escalonado podem ser pausadas ou ter o destino alterado.");
+    }
+    if (!campaign.whatsappChannel.serviceIsland) throw new NotFoundError("Ilha de atendimento do canal não encontrada.");
+    return campaign;
   },
 
   async list(user: AuthUser, query: ListCampaignsQuery) {
@@ -348,18 +468,31 @@ export const campaignService = {
   async getById(user: AuthUser, id: string) {
     const campaign = await prisma.campaign.findFirst({
       where: { id, organizationId: user.activeOrganizationId! },
-      include: { whatsappChannel: true, agent: true },
+      include: {
+        whatsappChannel: true,
+        agent: true,
+        routeToQueue: { select: { name: true } },
+        routeToUser: { select: { name: true } },
+      },
     });
     if (!campaign) throw new NotFoundError("Campanha não encontrada.");
 
-    const targets = await prisma.campaignTarget.findMany({
-      where: { campaignId: campaign.id },
-      include: { target: { select: { name: true, waId: true } } },
-      orderBy: { createdAt: "asc" },
-    });
+    const [targets, pendingContacts] = await Promise.all([
+      prisma.campaignTarget.findMany({
+        where: { campaignId: campaign.id },
+        include: { target: { select: { name: true, waId: true } } },
+        orderBy: { createdAt: "asc" },
+      }),
+      campaign.batchSize !== null ? prisma.campaignPendingContact.count({ where: { campaignId: campaign.id } }) : 0,
+    ]);
 
     return {
       ...this.toListItem(campaign, campaign.whatsappChannel.displayNumber, campaign.agent.name),
+      routeToQueueId: campaign.routeToQueueId,
+      routeToQueueName: campaign.routeToQueue?.name ?? null,
+      routeToUserId: campaign.routeToUserId,
+      routeToUserName: campaign.routeToUser?.name ?? null,
+      pendingContacts,
       targets: targets.map((t) => ({
         id: t.id,
         targetId: t.targetId,
@@ -393,6 +526,11 @@ export const campaignService = {
       createdByName: string | null;
       createdByEmail: string | null;
       sentAt: Date;
+      batchSize: number | null;
+      batchIntervalMinutes: number | null;
+      active: boolean;
+      scheduledAt: Date | null;
+      nextBatchAt: Date | null;
     },
     whatsappChannelDisplayNumber: string,
     agentName: string,
@@ -415,6 +553,11 @@ export const campaignService = {
       createdByName: c.createdByName,
       createdByEmail: c.createdByEmail,
       sentAt: c.sentAt,
+      batchSize: c.batchSize,
+      batchIntervalMinutes: c.batchIntervalMinutes,
+      active: c.active,
+      scheduledAt: c.scheduledAt,
+      nextBatchAt: c.nextBatchAt,
     };
   },
 };

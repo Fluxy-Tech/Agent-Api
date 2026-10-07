@@ -21,7 +21,7 @@ import type {
 /// detalhe do canal. period é um ano específico (Jan-Dez inteiro,
 /// granularidade mensal) ou "current-month" (mês corrente inteiro,
 /// granularidade diária).
-function resolveSeriesWindow(period: SeriesPeriod): { start: Date; end: Date; granularity: "day" | "month" } {
+export function resolveSeriesWindow(period: SeriesPeriod): { start: Date; end: Date; granularity: "day" | "month" } {
   if (period === "current-month") {
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -34,17 +34,17 @@ function resolveSeriesWindow(period: SeriesPeriod): { start: Date; end: Date; gr
   return { start, end, granularity: "month" };
 }
 
-function dayKey(date: Date): string {
+export function dayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function monthKey(date: Date): string {
+export function monthKey(date: Date): string {
   return date.toISOString().slice(0, 7);
 }
 
 /// Gera a lista de chaves de bucket (dias ou meses) do range inteiro, mesmo
 /// os sem nenhum dado — sem isso o gráfico ficaria com buracos em vez de 0.
-function buildBucketKeys(start: Date, end: Date, granularity: "day" | "month"): string[] {
+export function buildBucketKeys(start: Date, end: Date, granularity: "day" | "month"): string[] {
   const keys: string[] = [];
   if (granularity === "day") {
     const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));

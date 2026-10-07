@@ -1,7 +1,10 @@
 import type { Request } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { resolvePermissions } from "../../../application/authorization/permission-matrix";
+import { isPlatformAdminEmail } from "../../../application/authorization/platform-admins";
+import { isSupportOrganization } from "../../../application/company/support-organization";
 import { isMemberRole } from "../../../domain/enums/member-role";
+import { PLATFORM_ADMIN_ROLE, PLATFORM_SUPPORT_ROLE } from "../../../domain/enums/platform-role";
 import { UnauthorizedError } from "../../../domain/errors/app-error";
 import { auth } from "../../../infrastructure/auth/better-auth";
 import { prisma } from "../../../infrastructure/database/prisma/client";
@@ -34,11 +37,21 @@ export async function getAuthUser(req: Request): Promise<AuthUser> {
     }
   }
 
+  const isPlatformAdmin = session.user.role === PLATFORM_ADMIN_ROLE || isPlatformAdminEmail(session.user.email);
+  const isSupportAgent = !isPlatformAdmin && session.user.role === PLATFORM_SUPPORT_ROLE;
+  // Só o time de suporte (não admin) tem restrição por classificação.
+  const supportSettings = isSupportAgent
+    ? await prisma.supportAgentSettings.findUnique({ where: { userId: session.user.id }, select: { severities: true } })
+    : null;
+
   return {
     id: session.user.id,
     email: session.user.email,
     name: session.user.name,
-    isPlatformAdmin: session.user.role === "admin",
+    isPlatformAdmin,
+    isSupportAgent,
+    supportSeverities: supportSettings?.severities ?? null,
+    actingAsSupport: (isPlatformAdmin || isSupportAgent) && isSupportOrganization(activeOrganizationId),
     activeOrganizationId,
     activeMemberRole,
     activePermissions,

@@ -38,6 +38,8 @@ export const PERMISSION_MATRIX: Record<MemberRole, PermissionAction[]> = {
     PermissionAction.ACCESS_VIEW,
     PermissionAction.ACCESS_WRITE,
     PermissionAction.REPORTS_VIEW,
+    PermissionAction.SUPPORT_VIEW,
+    PermissionAction.SUPPORT_WRITE,
     PermissionAction.COMPANIES_MANAGE_OWN,
   ],
 };
@@ -62,6 +64,8 @@ export const CONFIGURABLE_PERMISSIONS: PermissionAction[] = [
   PermissionAction.SERVICE_ISLANDS_WRITE,
   PermissionAction.QUEUES_VIEW,
   PermissionAction.QUEUES_WRITE,
+  PermissionAction.SUPPORT_VIEW,
+  PermissionAction.SUPPORT_WRITE,
 ];
 
 export function isConfigurablePermission(value: unknown): value is PermissionAction {

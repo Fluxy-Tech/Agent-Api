@@ -4,6 +4,7 @@ import { z } from "zod";
 import { companyService } from "../../../application/company/company-service";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../../domain/errors/app-error";
 import { auth } from "../../../infrastructure/auth/better-auth";
+import { prisma } from "../../../infrastructure/database/prisma/client";
 import { apiHandler } from "../middlewares/api-handler";
 import { recordAudit } from "../middlewares/audit";
 
@@ -32,10 +33,28 @@ sessionRouter.post(
     const company = await companyService.getById(user, companyId).catch(() => null);
     if (!company) throw new NotFoundError("Empresa não encontrada.");
 
-    await auth.api.setActiveOrganization({
-      body: { organizationId: companyId },
-      headers: fromNodeHeaders(req.headers),
+    const headers = fromNodeHeaders(req.headers);
+    const isMember = await prisma.member.findUnique({
+      where: { organizationId_userId: { organizationId: companyId, userId: user.id } },
+      select: { id: true },
     });
+
+    if (isMember) {
+      await auth.api.setActiveOrganization({ body: { organizationId: companyId }, headers });
+    } else {
+      // Administrador sem Member na empresa (ex: a central "Suporte Sturnus",
+      // ou uma empresa cliente que ele está atendendo): o plugin organization
+      // do Better Auth recusa (USER_IS_NOT_A_MEMBER_OF_THE_ORGANIZATION), então
+      // grava a empresa ativa direto na sessão. Seguro porque só chega aqui
+      // quem passou pela checagem acima (não-admin precisa ser membro), e a
+      // sessão é lida do banco a cada request (sem cookie cache).
+      const session = await auth.api.getSession({ headers });
+      if (!session) throw new ForbiddenError();
+      await prisma.session.update({
+        where: { id: session.session.id },
+        data: { activeOrganizationId: companyId },
+      });
+    }
 
     await recordAudit(req, user, {
       action: "COMPANY_ACTIVATED",

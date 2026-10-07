@@ -69,6 +69,26 @@ const envSchema = z.object({
   /// app do Gmail (não a senha normal da conta).
   GMAIL_USER: z.string().min(1),
   PASSWORD_GOOGLE: z.string().min(1),
+
+  /// URL pública do Agent Console — usada nos links dos e-mails de
+  /// notificação do suporte técnico (ex: <CONSOLE_URL>/support/<id>).
+  /// E-mails que são SEMPRE Administrador da plataforma (time de suporte
+  /// técnico) — ver application/authorization/platform-admins.ts. Lista
+  /// separada por vírgula; vazio desliga.
+  PLATFORM_ADMIN_EMAILS: z
+    .string()
+    .default("sturnusflow@gmail.com")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+
+  CONSOLE_URL: z
+    .string()
+    .default("https://agentes.sturnusflow.com.br")
+    .transform((value) => value.replace(/\/+$/, "")),
 });
 
 const parsed = envSchema.safeParse(process.env);

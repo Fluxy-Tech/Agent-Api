@@ -5,6 +5,8 @@ import {
   createCampaignSchema,
   listCampaignsFilterSchema,
   listCampaignsQuerySchema,
+  setCampaignActiveSchema,
+  updateCampaignDestinationSchema,
 } from "../../../application/campaign/campaign-validation";
 import { PermissionAction } from "../../../domain/enums/permission-action";
 import { ValidationError } from "../../../domain/errors/app-error";
@@ -72,6 +74,44 @@ campaignsRouter.post(
       resourceType: "Campaign",
       resourceId: campaign.id,
       afterState: campaign,
+    });
+
+    return campaign;
+  }),
+);
+
+campaignsRouter.patch(
+  "/:id/active",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const parsed = setCampaignActiveSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const campaign = await campaignService.setActive(user, String(req.params.id), parsed.data.active);
+
+    await recordAudit(req, user, {
+      action: parsed.data.active ? "CAMPAIGN_RESUMED" : "CAMPAIGN_PAUSED",
+      resourceType: "Campaign",
+      resourceId: campaign.id,
+      afterState: { active: campaign.active },
+    });
+
+    return campaign;
+  }),
+);
+
+campaignsRouter.patch(
+  "/:id/destination",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const parsed = updateCampaignDestinationSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    const campaign = await campaignService.updateDestination(user, String(req.params.id), parsed.data);
+
+    await recordAudit(req, user, {
+      action: "CAMPAIGN_DESTINATION_UPDATED",
+      resourceType: "Campaign",
+      resourceId: campaign.id,
+      afterState: { routeToQueueId: campaign.routeToQueueId, routeToUserId: campaign.routeToUserId },
     });
 
     return campaign;

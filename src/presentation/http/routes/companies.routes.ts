@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { companyService } from "../../../application/company/company-service";
+import { isSupportOrganization } from "../../../application/company/support-organization";
 import { ForbiddenError, ValidationError } from "../../../domain/errors/app-error";
 import { apiHandler } from "../middlewares/api-handler";
 import { recordAudit } from "../middlewares/audit";
@@ -22,11 +23,13 @@ export const companiesRouter = Router();
 /// (nem em resposta HTTP nem em AuditLog) — o valor em claro só é devolvido
 /// pelas rotas dedicadas GET/POST /:id/api-token, que exigem papel de
 /// GERENTE/admin.
-function sanitizeCompany<T extends { tokenAcessApi?: string | null }>(
+/// isSupportHub marca a empresa fixa "Suporte Sturnus" (ver
+/// support-organization.ts) — o Console usa pra mandar direto pra /support.
+function sanitizeCompany<T extends { id: string; tokenAcessApi?: string | null }>(
   company: T,
-): Omit<T, "tokenAcessApi"> & { hasApiAccessToken: boolean } {
+): Omit<T, "tokenAcessApi"> & { hasApiAccessToken: boolean; isSupportHub: boolean } {
   const { tokenAcessApi, ...rest } = company;
-  return { ...rest, hasApiAccessToken: Boolean(tokenAcessApi) };
+  return { ...rest, hasApiAccessToken: Boolean(tokenAcessApi), isSupportHub: isSupportOrganization(company.id) };
 }
 
 companiesRouter.get(

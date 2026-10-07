@@ -6,6 +6,7 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from ".
 import { slugify } from "../../domain/utils/slug";
 import { prisma } from "../../infrastructure/database/prisma/client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
+import { isSupportOrganization, SUPPORT_ORGANIZATION_ID } from "./support-organization";
 
 /// Sem 0/O/1/I/L — código digitado à mão, não pode ter caracteres ambíguos.
 const INVITE_CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -71,11 +72,18 @@ export const companyService = {
       orderBy: { createdAt: "desc" },
     });
 
+    // Time de suporte também enxerga a central "Suporte Sturnus" (sem ser
+    // Member dela), além das próprias empresas.
+    if (user.isSupportAgent) {
+      const hub = await prisma.organization.findUnique({ where: { id: SUPPORT_ORGANIZATION_ID } });
+      if (hub) return [hub, ...memberships.map((m) => m.organization)];
+    }
+
     return memberships.map((m) => m.organization);
   },
 
   async getById(user: AuthUser, organizationId: string) {
-    if (!user.isPlatformAdmin) {
+    if (!user.isPlatformAdmin && !(user.isSupportAgent && isSupportOrganization(organizationId))) {
       const member = await prisma.member.findUnique({
         where: { organizationId_userId: { organizationId, userId: user.id } },
       });

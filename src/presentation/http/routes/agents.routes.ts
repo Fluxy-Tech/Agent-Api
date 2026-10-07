@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { agentService } from "../../../application/agent/agent-service";
 import { createAgentSchema, listAgentsQuerySchema, updateAgentSchema } from "../../../application/agent/agent-validation";
+import { agentTokenService } from "../../../application/agent-token/agent-token-service";
 import { agentFunctionService } from "../../../application/agent-function/agent-function-service";
 import {
   agentFunctionTypeSchema,
@@ -14,6 +15,7 @@ import {
   createRagDocumentSchema,
   presignRagDocumentSchema,
 } from "../../../application/rag-document/rag-document-validation";
+import { seriesPeriodSchema } from "../../../application/whatsapp-channel/whatsapp-channel-validation";
 import { PermissionAction } from "../../../domain/enums/permission-action";
 import { ValidationError } from "../../../domain/errors/app-error";
 import { previewToken } from "../../../infrastructure/crypto/token-cipher";
@@ -47,6 +49,18 @@ agentsRouter.get(
 
     const agents = await agentService.list(user, parsed.data);
     return agents.map(sanitizeAgent);
+  }),
+);
+
+/// Consumo de tokens da empresa inteira (total, por origem, por agente e
+/// série no tempo) — precisa vir antes de "/:id".
+agentsRouter.get(
+  "/token-usage",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    const parsed = seriesPeriodSchema.safeParse(req.query.period);
+    if (!parsed.success) throw new ValidationError("Período inválido.", parsed.error.flatten());
+
+    return agentTokenService.organizationUsage(user, parsed.data);
   }),
 );
 
@@ -116,6 +130,16 @@ agentsRouter.delete(
     });
 
     return sanitizeAgent(agent);
+  }),
+);
+
+agentsRouter.get(
+  "/:id/token-usage",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    const parsed = seriesPeriodSchema.safeParse(req.query.period);
+    if (!parsed.success) throw new ValidationError("Período inválido.", parsed.error.flatten());
+
+    return agentTokenService.agentUsage(user, String(req.params.id), parsed.data);
   }),
 );
 

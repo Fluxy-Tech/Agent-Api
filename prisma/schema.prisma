@@ -42,6 +42,11 @@ model User {
   calendarEventAnnotations  CalendarEventAnnotation[]
   assignedCalendarEvents    CalendarEvent[]
   campaignsRoutedToMe       Campaign[]         @relation("CampaignRouteToUser")
+  supportTicketsOpened      SupportTicket[]
+  supportMessages           SupportTicketMessage[]
+  supportAttachments        SupportTicketAttachment[]
+  supportReadStates         SupportTicketReadState[]
+  supportAgentSettings      SupportAgentSettings?
 
   @@unique([email])
   @@map("user")
@@ -126,6 +131,7 @@ model Organization {
   funil             Funil?
   calendar          CalendarOrganization?
   crmSettings       CrmSettings?
+  supportTickets    SupportTicket[]
 
   @@unique([slug])
   @@map("organization")
@@ -313,9 +319,36 @@ model Agent {
   campaigns        Campaign[]
   metadataFields   AgentMetadataField[]
   functions        AgentFunction[]
+  tokens           Token[]
 
   @@index([organizationId])
   @@index([defaultQueueId])
+}
+
+// ---------- CONSUMO DE TOKENS DO AGENTE ----------
+
+/// De onde veio o consumo: OPENAI = chamadas diretas à OpenAI feitas pelo
+/// AI-Worker (escolha de fila no handoff, resumo do card, mensagem de erro
+/// livre, embeddings do RAG); ADK = geração da resposta via Google ADK (Gemini).
+enum TokenOrigin {
+  OPENAI
+  ADK
+}
+
+/// Uma linha por chamada de LLM (ou por turno do ADK) feita pelo AI-Worker em
+/// nome do agente — gravada via POST /internal/agents/:id/tokens (o AI-Worker
+/// não acessa o Postgres direto). Alimenta as métricas de consumo da tela de
+/// Agentes do Agent Console (por agente e total da empresa).
+model Token {
+  id        String      @id @default(cuid())
+  agentId   String
+  agent     Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  /// Total de tokens (entrada + saída) consumidos nessa chamada.
+  quantity  Int
+  origin    TokenOrigin
+  createdAt DateTime    @default(now())
+
+  @@index([agentId, createdAt])
 }
 
 // ---------- METADADOS DO AGENTE ----------
@@ -819,17 +852,62 @@ model Campaign {
   routeToUserId  String?
   routeToUser    User?   @relation("CampaignRouteToUser", fields: [routeToUserId], references: [id], onDelete: SetNull)
 
+  /// Texto cru do HEADER/BODY do template (com {{n}}) — guardado aqui porque
+  /// no disparo escalonado o Campaign-Worker monta o envio a partir do banco
+  /// (não recebe mais o payload completo), e precisa disso pra gravar o
+  /// histórico de conversa já com as variáveis substituídas.
+  templateHeaderText String?
+  templateBodyText   String?
+
+  /// Disparo escalonado: em vez de mandar a lista inteira pra fila de uma vez,
+  /// os contatos ficam em CampaignPendingContact e o scheduler do
+  /// Campaign-Worker envia batchSize contatos a cada batchIntervalMinutes.
+  /// null = disparo imediato (fluxo antigo, via fila campaign.message.send).
+  batchSize            Int?
+  batchIntervalMinutes Int?
+  /// Pausa/retoma o disparo escalonado — o scheduler só pega campanhas com
+  /// active=true. Enquanto pausada, o destino (routeToQueueId/routeToUserId)
+  /// pode ser alterado.
+  active               Boolean   @default(true)
+  /// Data/hora escolhida pelo usuário para começar o disparo (null = imediato).
+  scheduledAt          DateTime?
+  /// Quando o scheduler deve enviar o próximo lote. Começa em scheduledAt (ou
+  /// no momento da criação) e é empurrado a cada lote processado; null quando
+  /// não há mais nada a enviar.
+  nextBatchAt          DateTime?
+
   sentAt    DateTime @default(now())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  targets CampaignTarget[]
+  targets         CampaignTarget[]
+  pendingContacts CampaignPendingContact[]
 
   @@index([organizationId])
   @@index([whatsappChannelId])
   @@index([agentId])
   @@index([routeToQueueId])
   @@index([routeToUserId])
+  /// Índice da consulta do scheduler (status=PROCESSING, active=true,
+  /// nextBatchAt <= now()) — mantém o tick barato mesmo com muitas campanhas.
+  @@index([status, active, nextBatchAt])
+}
+
+/// Contato de um disparo escalonado que ainda não foi enviado. O
+/// Campaign-Worker consome em ordem de `position` e apaga a linha ao enviar
+/// (o resultado fica em CampaignTarget) — a tabela só guarda o que falta.
+model CampaignPendingContact {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  position   Int
+  /// Mesmo formato de DispatchContactInput (phone, name, email, metadata,
+  /// parametersHeader/Body/Button, buttonSubType).
+  contact    Json
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, position])
 }
 
 /// Uma linha por contato disparado dentro de uma campanha.
@@ -1300,4 +1378,141 @@ model CalendarEventAnnotation {
 
   @@index([eventId])
   @@index([userId])
+}
+
+// ---------- SUPORTE TÉCNICO ----------
+
+/// Severidade do chamado, escolhida por quem abre (o time de apoio pode
+/// reclassificar). Cresce com o impacto:
+/// - S1 (Baixa): erro pontual ou cosmético, ou dúvida — a plataforma segue
+///   funcionando e existe contorno. Ex: texto/layout errado, lentidão
+///   isolada, dúvida de configuração.
+/// - S2 (Alta): uma funcionalidade ou tela não funciona ou mostra dados
+///   errados, sem contorno simples, mas o atendimento continua. Ex: campanha
+///   não dispara, Kanban não salva, relatório não carrega, agente de IA
+///   respondendo errado.
+/// - S3 (Crítica): operação parada — plataforma fora do ar/inacessível para
+///   todos, ou falha na conexão com a Meta (WhatsApp sem enviar/receber,
+///   número ou token desconectado, templates bloqueados).
+enum SupportSeverity {
+  S1
+  S2
+  S3
+}
+
+/// OPEN = aguardando o time de apoio; IN_PROGRESS = apoio respondeu/está
+/// tratando; WAITING_CUSTOMER = apoio precisa de retorno da empresa;
+/// RESOLVED = encerrado (uma nova mensagem da empresa reabre como OPEN).
+enum SupportTicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  RESOLVED
+}
+
+/// CUSTOMER = alguém da empresa (Gerente ou quem tiver SUPPORT_WRITE);
+/// SUPPORT = time de apoio (Administrador da plataforma, User.role "admin").
+enum SupportMessageAuthor {
+  CUSTOMER
+  SUPPORT
+}
+
+/// Chamado de suporte técnico aberto por uma empresa no Agent Console e
+/// atendido pelo time de apoio (Administradores da plataforma, que veem os
+/// chamados de todas as empresas). Não confundir com Ticket, que é o
+/// atendimento humano de contatos do WhatsApp no Desk.
+model SupportTicket {
+  id             String              @id @default(cuid())
+  /// Número sequencial global, só pra exibição ("#42") — o id continua
+  /// sendo a chave de verdade.
+  code           Int                 @unique @default(autoincrement())
+  organizationId String
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  openedById     String
+  openedBy       User                @relation(fields: [openedById], references: [id], onDelete: Cascade)
+  title          String
+  description    String
+  severity       SupportSeverity
+  status         SupportTicketStatus @default(OPEN)
+  /// Última mensagem (de qualquer lado) — ordena a lista de chamados.
+  lastMessageAt  DateTime            @default(now())
+  resolvedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  messages    SupportTicketMessage[]
+  attachments SupportTicketAttachment[]
+  readStates  SupportTicketReadState[]
+
+  @@index([organizationId, lastMessageAt])
+  @@index([status, lastMessageAt])
+}
+
+/// Histórico de conversa do chamado. content pode vir vazio quando a
+/// mensagem é só anexo.
+model SupportTicketMessage {
+  id         String               @id @default(cuid())
+  ticketId   String
+  ticket     SupportTicket        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User                 @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorType SupportMessageAuthor
+  content    String               @default("")
+  createdAt  DateTime             @default(now())
+
+  attachments SupportTicketAttachment[]
+
+  @@index([ticketId, createdAt])
+}
+
+/// Documento/mídia anexado ao chamado. O arquivo mora no S3 (SeaweedFS) —
+/// aqui fica só a chave e os metadados; a URL presignada de leitura é gerada
+/// na hora de devolver (mesma regra de CardCrm.attachments). messageId null =
+/// anexo enviado na abertura do chamado (junto da descrição).
+model SupportTicketAttachment {
+  id           String                @id @default(cuid())
+  ticketId     String
+  ticket       SupportTicket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  messageId    String?
+  message      SupportTicketMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User                  @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  fileName     String
+  contentType  String
+  /// Tamanho em bytes.
+  size         Int
+  s3Key        String                @unique
+  createdAt    DateTime              @default(now())
+
+  @@index([ticketId])
+  @@index([messageId])
+}
+
+/// Até quando cada usuário leu cada chamado — base das notificações de
+/// mensagem nova (contador do menu, toast, destaque na lista e o controle de
+/// e-mail). Não lida = mensagem do OUTRO lado (apoio ↔ empresa) criada depois
+/// de lastReadAt. Sem linha = nunca abriu o chamado. Gravada ao abrir o
+/// chamado na tela e ao escrever nele (quem escreve leu o que veio antes).
+model SupportTicketReadState {
+  id         String        @id @default(cuid())
+  ticketId   String
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime
+
+  @@unique([ticketId, userId])
+  @@index([userId])
+}
+
+/// Classificações (S1/S2/S3) que cada pessoa do time de suporte (User.role
+/// "support") atende — definidas por um Administrador na tela "Time de
+/// suporte". Ela só vê, recebe notificação e responde tickets dessas
+/// classificações. Sem linha = atende todas (padrão ao entrar no time).
+/// Administrador não tem linha: sempre atende todas.
+model SupportAgentSettings {
+  userId     String            @id
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  severities SupportSeverity[]
+  updatedAt  DateTime          @updatedAt
 }

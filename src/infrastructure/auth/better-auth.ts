@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { admin, organization } from "better-auth/plugins";
+import { isPlatformAdminEmail } from "../../application/authorization/platform-admins";
 import { env } from "../../config/env";
 import { prisma } from "../database/prisma/client";
 import { sendResetPasswordEmail } from "../mail/mailer";
@@ -30,6 +31,20 @@ export const auth = betterAuth({
     // pro redirectTo do chamador com ?token= anexado.
     sendResetPassword: async ({ user, url }) => {
       await sendResetPasswordEmail({ to: user.email, userName: user.name, url });
+    },
+  },
+  databaseHooks: {
+    user: {
+      create: {
+        /// Conta criada com um e-mail de PLATFORM_ADMIN_EMAILS já vira
+        /// Administrador. Feito no "after" (update direto) em vez de mexer no
+        /// "before", pra não depender da ordem em que o plugin admin aplica o
+        /// role padrão "user".
+        after: async (user) => {
+          if (!isPlatformAdminEmail(user.email)) return;
+          await prisma.user.update({ where: { id: user.id }, data: { role: "admin" } });
+        },
+      },
     },
   },
   plugins: [

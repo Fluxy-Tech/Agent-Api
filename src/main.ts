@@ -1,6 +1,8 @@
 import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
 import express from "express";
+import { ensurePlatformAdmins } from "./application/authorization/platform-admins";
+import { ensureSupportOrganization } from "./application/company/support-organization";
 import { env } from "./config/env";
 import { auth } from "./infrastructure/auth/better-auth";
 import { redis } from "./infrastructure/cache/redis/client";
@@ -13,6 +15,7 @@ import { companiesRouter } from "./presentation/http/routes/companies.routes";
 import { crmRouter } from "./presentation/http/routes/crm.routes";
 import { internalRouter } from "./presentation/http/routes/internal.routes";
 import { reportsRouter } from "./presentation/http/routes/reports.routes";
+import { supportRouter } from "./presentation/http/routes/support.routes";
 import { serviceIslandsRouter } from "./presentation/http/routes/service-islands.routes";
 import { sessionRouter } from "./presentation/http/routes/session.routes";
 import { targetsRouter } from "./presentation/http/routes/targets.routes";
@@ -21,6 +24,8 @@ import { whatsappChannelsRouter } from "./presentation/http/routes/whatsapp-chan
 
 async function main() {
   await prisma.$connect();
+  await ensurePlatformAdmins();
+  await ensureSupportOrganization();
   await getRabbitChannel();
 
   const app = express();
@@ -48,6 +53,7 @@ async function main() {
   app.use("/api/campaigns", campaignsRouter);
   app.use("/api/crm", crmRouter);
   app.use("/api/reports", reportsRouter);
+  app.use("/api/support", supportRouter);
   app.use("/internal", internalRouter);
 
   app.get("/health", async (_req, res) => {
