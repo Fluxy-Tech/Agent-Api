@@ -14,6 +14,7 @@ import { campaignsRouter } from "./presentation/http/routes/campaigns.routes";
 import { companiesRouter } from "./presentation/http/routes/companies.routes";
 import { crmRouter } from "./presentation/http/routes/crm.routes";
 import { internalRouter } from "./presentation/http/routes/internal.routes";
+import { meRouter } from "./presentation/http/routes/me.routes";
 import { reportsRouter } from "./presentation/http/routes/reports.routes";
 import { supportRouter } from "./presentation/http/routes/support.routes";
 import { serviceIslandsRouter } from "./presentation/http/routes/service-islands.routes";
@@ -45,6 +46,7 @@ async function main() {
 
   app.use("/api/companies", companiesRouter);
   app.use("/api/session", sessionRouter);
+  app.use("/api/me", meRouter);
   app.use("/api/agents", agentsRouter);
   app.use("/api/channels", whatsappChannelsRouter);
   app.use("/api/service-islands", serviceIslandsRouter);

@@ -2,6 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { companyService } from "../../../application/company/company-service";
 import { isSupportOrganization } from "../../../application/company/support-organization";
+import { imageUrlFor, presignImageSchema } from "../../../application/profile/image-upload";
+import type { AuthUser } from "../types/auth-user";
 import { ForbiddenError, ValidationError } from "../../../domain/errors/app-error";
 import { apiHandler } from "../middlewares/api-handler";
 import { recordAudit } from "../middlewares/audit";
@@ -16,6 +18,15 @@ const updateMemberBlockedSchema = z.object({ blocked: z.boolean() });
 const updateMemberPermissionsSchema = z.object({ permissions: z.array(z.string()).nullable() });
 const generateInviteCodeSchema = z.object({ role: z.string().min(1), email: z.string().email() });
 const redeemInviteCodeSchema = z.object({ code: z.string().min(1) });
+const updateCompanySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  // Aceita com ou sem máscara, mas precisa ter os 14 dígitos de um CNPJ.
+  cnpj: z
+    .string()
+    .trim()
+    .refine((value) => value.replace(/\D/g, "").length === 14, "CNPJ precisa ter 14 dígitos."),
+  logo: z.string().min(1).nullable().optional(),
+});
 
 export const companiesRouter = Router();
 
@@ -30,6 +41,24 @@ function sanitizeCompany<T extends { id: string; tokenAcessApi?: string | null }
 ): Omit<T, "tokenAcessApi"> & { hasApiAccessToken: boolean; isSupportHub: boolean } {
   const { tokenAcessApi, ...rest } = company;
   return { ...rest, hasApiAccessToken: Boolean(tokenAcessApi), isSupportHub: isSupportOrganization(company.id) };
+}
+
+/// Organization.logo guarda a chave do S3 — a URL de leitura é presignada
+/// (expira), então é gerada a cada leitura.
+async function withLogoUrl<T extends { id: string; logo?: string | null; tokenAcessApi?: string | null }>(company: T) {
+  return { ...sanitizeCompany(company), logoUrl: await imageUrlFor(company.logo) };
+}
+
+/// Mesma checagem manual de papel das rotas de Acessos: Gerente (não
+/// bloqueado) da empresa-alvo, ou Administrador.
+async function assertCompanyManager(user: AuthUser, organizationId: string, message: string) {
+  if (user.isPlatformAdmin) return;
+  const requesterMembership = await companyService
+    .listMembers(user, organizationId)
+    .then((members) => members.find((m) => m.userId === user.id));
+  if (requesterMembership?.role !== "GERENTE" || requesterMembership.blocked) {
+    throw new ForbiddenError(message);
+  }
 }
 
 companiesRouter.get(
@@ -63,7 +92,51 @@ companiesRouter.get(
   "/:id",
   apiHandler({ requireCompany: false }, async (req, _res, user) => {
     const company = await companyService.getById(user, String(req.params.id));
-    return sanitizeCompany(company);
+    return withLogoUrl(company);
+  }),
+);
+
+/// Tela Configurações → "Empresa": nome, CNPJ e logo da empresa-alvo.
+companiesRouter.put(
+  "/:id",
+  apiHandler({ requireCompany: false }, async (req, _res, user) => {
+    const parsed = updateCompanySchema.safeParse(req.body);
+    if (!parsed.success) {
+      const message = parsed.error.issues.find((issue) => issue.path[0] === "cnpj")?.message ?? "Dados inválidos.";
+      throw new ValidationError(message, parsed.error.flatten());
+    }
+
+    const organizationId = String(req.params.id);
+    await assertCompanyManager(user, organizationId, "Apenas Gerente ou Administrador podem alterar os dados da empresa.");
+
+    const before = sanitizeCompany(await companyService.getById(user, organizationId));
+    const updated = await companyService.update(user, organizationId, parsed.data);
+    const safeUpdated = sanitizeCompany(updated);
+
+    await recordAudit(req, user, {
+      action: "COMPANY_UPDATED",
+      resourceType: "Company",
+      resourceId: organizationId,
+      beforeState: before,
+      afterState: safeUpdated,
+    });
+
+    return withLogoUrl(updated);
+  }),
+);
+
+companiesRouter.post(
+  "/:id/logo/presign",
+  apiHandler({ requireCompany: false }, async (req, _res, user) => {
+    const parsed = presignImageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ValidationError("Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF.", parsed.error.flatten());
+    }
+
+    const organizationId = String(req.params.id);
+    await assertCompanyManager(user, organizationId, "Apenas Gerente ou Administrador podem alterar o logo da empresa.");
+
+    return companyService.presignLogo(user, organizationId, parsed.data);
   }),
 );
 

@@ -135,3 +135,34 @@ export function createDownloadUrl(s3Key: string): Promise<string> {
     expiresIn: 3600,
   });
 }
+
+/// Prefixo da foto de perfil de um usuário — por usuário (não por empresa),
+/// porque a foto vale em todas as empresas dele. Usado pra gerar a chave e pra
+/// validar (profile-service.ts) que a chave confirmada é mesmo deste usuário.
+export function userAvatarKeyPrefix(userId: string): string {
+  return `${env.SEAWEEDFS_S3_PREFIX}/user-avatars/${userId}/`;
+}
+
+/// Prefixo do logo de uma empresa — mesma ideia do avatar, por empresa.
+export function companyLogoKeyPrefix(organizationId: string): string {
+  return `${env.SEAWEEDFS_S3_PREFIX}/company-logos/${organizationId}/`;
+}
+
+/// URL presignada de PUT pra uma imagem (avatar/logo) ir direto do navegador
+/// pro S3, sob o prefixo informado.
+export async function createImageUploadUrl(input: {
+  keyPrefix: string;
+  fileName: string;
+  contentType: string;
+}): Promise<{ uploadUrl: string; s3Key: string }> {
+  const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const s3Key = `${input.keyPrefix}${Date.now()}-${safeFileName}`;
+
+  const uploadUrl = await getSignedUrl(
+    client,
+    new PutObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key, ContentType: input.contentType }),
+    { expiresIn: 300 },
+  );
+
+  return { uploadUrl, s3Key };
+}

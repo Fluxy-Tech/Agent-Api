@@ -5,6 +5,8 @@ import { isMemberRole } from "../../domain/enums/member-role";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { slugify } from "../../domain/utils/slug";
 import { prisma } from "../../infrastructure/database/prisma/client";
+import { companyLogoKeyPrefix, createImageUploadUrl } from "../../infrastructure/storage/s3-client";
+import { assertUploadedImage } from "../profile/image-upload";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
 import { isSupportOrganization, SUPPORT_ORGANIZATION_ID } from "./support-organization";
 
@@ -94,6 +96,34 @@ export const companyService = {
     if (!organization) throw new NotFoundError("Empresa não encontrada.");
 
     return organization;
+  },
+
+  /// Tela Configurações → "Empresa": nome, CNPJ e logo. O slug não muda junto
+  /// com o nome (é único e pode estar referenciado). `logo`: chave do S3 de
+  /// um logo recém-enviado, null pra remover, undefined pra manter.
+  /// Quem chama a rota já checou o papel GERENTE/admin na empresa-alvo.
+  async update(
+    user: AuthUser,
+    organizationId: string,
+    input: { name: string; cnpj: string; logo?: string | null },
+  ) {
+    await this.getById(user, organizationId);
+
+    if (input.logo) await assertUploadedImage(companyLogoKeyPrefix(organizationId), input.logo);
+
+    return prisma.organization.update({
+      where: { id: organizationId },
+      data: {
+        name: input.name.trim(),
+        cnpj: input.cnpj.trim(),
+        ...(input.logo !== undefined && { logo: input.logo }),
+      },
+    });
+  },
+
+  async presignLogo(user: AuthUser, organizationId: string, input: { fileName: string; contentType: string }) {
+    await this.getById(user, organizationId);
+    return createImageUploadUrl({ keyPrefix: companyLogoKeyPrefix(organizationId), ...input });
   },
 
   async listMembers(user: AuthUser, organizationId: string) {
