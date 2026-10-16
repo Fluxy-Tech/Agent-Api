@@ -25,23 +25,29 @@ async function assertFlowOfChannel(user: AuthUser, channelId: string, flowId: st
   return { ...access, flow };
 }
 
-/// WhatsApp Flows do WABA da rede social — lidos e gerenciados direto na Meta
-/// (sem tabela própria: a Meta é a fonte da verdade).
 /// Funcionalidades "Formulário (Flow)" dos agentes guardam o status do flow
 /// (rascunho sai em modo draft; descontinuado/excluído deixa de ser enviado).
+/// Roda depois da ação na Meta, que já aconteceu: falha aqui só é registrada,
+/// pra não mostrar erro de uma ação que deu certo.
 async function syncAgentFeatures(user: AuthUser, flowId: string, status: string) {
-  const features = await prisma.agentFeature.findMany({
-    where: { type: "FLOW", config: { path: ["flowId"], equals: flowId }, agent: { organizationId: user.activeOrganizationId! } },
-    select: { id: true, config: true },
-  });
-  for (const feature of features) {
-    await prisma.agentFeature.update({
-      where: { id: feature.id },
-      data: { config: { ...(feature.config as Record<string, unknown>), status } },
+  try {
+    const features = await prisma.agentFeature.findMany({
+      where: { type: "FLOW", config: { path: ["flowId"], equals: flowId }, agent: { organizationId: user.activeOrganizationId! } },
+      select: { id: true, config: true },
     });
+    for (const feature of features) {
+      await prisma.agentFeature.update({
+        where: { id: feature.id },
+        data: { config: { ...(feature.config as Record<string, unknown>), status } },
+      });
+    }
+  } catch (error) {
+    console.error(`[flows] não foi possível atualizar as funcionalidades do flow ${flowId} para ${status}:`, error);
   }
 }
 
+/// WhatsApp Flows do WABA da rede social — lidos e gerenciados direto na Meta
+/// (sem tabela própria: a Meta é a fonte da verdade).
 export const whatsappFlowService = {
   async list(user: AuthUser, channelId: string) {
     const { wabaId, token } = await resolveChannelAccess(user, channelId);
