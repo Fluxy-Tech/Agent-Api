@@ -3,6 +3,7 @@ import { NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { encryptToken } from "../../infrastructure/crypto/token-cipher";
 import { prisma } from "../../infrastructure/database/prisma/client";
 import { listWabaCatalogs } from "../../infrastructure/meta/meta-graph-client";
+import { listFlows } from "../../infrastructure/meta/meta-business-client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
 import type { CreateAgentInput, ListAgentsQuery, UpdateAgentInput } from "./agent-validation";
 
@@ -67,6 +68,39 @@ export const agentService = {
     }
 
     return { catalogs: [...catalogs.values()], hasChannels: channels.length > 0, errors };
+  },
+
+  /// WhatsApp Flows (rascunho ou publicado) dos WABAs das redes sociais do
+  /// agente — alimenta o seletor da funcionalidade "Formulário (Flow)".
+  async listFlows(user: AuthUser, id: string) {
+    const agent = await this.getById(user, id);
+    const channels = await prisma.channel.findMany({
+      where: { agentId: agent.id, organizationId: user.activeOrganizationId! },
+      select: { wabaId: true, displayNumber: true, metaAccessToken: true },
+    });
+
+    const flows: { id: string; name: string; status: string; wabaId: string; channel: string }[] = [];
+    const errors: string[] = [];
+    const seenWabas = new Set<string>();
+
+    for (const channel of channels) {
+      if (seenWabas.has(channel.wabaId)) continue;
+      seenWabas.add(channel.wabaId);
+      if (!channel.metaAccessToken) {
+        errors.push(`${channel.displayNumber}: rede social sem token da Meta cadastrado.`);
+        continue;
+      }
+      try {
+        for (const flow of await listFlows(channel.wabaId, channel.metaAccessToken)) {
+          if (flow.status !== "DRAFT" && flow.status !== "PUBLISHED") continue;
+          flows.push({ id: flow.id, name: flow.name, status: flow.status, wabaId: channel.wabaId, channel: channel.displayNumber });
+        }
+      } catch (error) {
+        errors.push(`${channel.displayNumber}: ${error instanceof Error ? error.message : "falha ao consultar a Meta."}`);
+      }
+    }
+
+    return { flows, hasChannels: channels.length > 0, errors };
   },
 
   async getById(user: AuthUser, id: string) {

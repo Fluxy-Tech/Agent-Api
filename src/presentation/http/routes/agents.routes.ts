@@ -148,6 +148,15 @@ agentsRouter.get(
   }),
 );
 
+/// WhatsApp Flows das redes sociais deste agente — seletor da funcionalidade
+/// "Formulário (Flow)".
+agentsRouter.get(
+  "/:id/flows",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentService.listFlows(user, String(req.params.id));
+  }),
+);
+
 /// Produtos de um catálogo — escolha manual dos cards do carrossel de produtos.
 agentsRouter.get(
   "/:id/catalogs/:catalogId/products",

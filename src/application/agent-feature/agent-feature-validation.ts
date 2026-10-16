@@ -15,6 +15,7 @@ export const META_LIMITS = {
   carouselMinCards: 2,
   carouselMaxCards: 10,
   carouselCardBody: 160,
+  flowCta: 30,
 } as const;
 
 export const AGENT_FEATURE_TYPES = [
@@ -28,6 +29,7 @@ export const AGENT_FEATURE_TYPES = [
   "CONTEXTUAL_REPLY",
   "LINK_PREVIEW",
   "PAYMENT",
+  "FLOW",
 ] as const;
 export type AgentFeatureType = (typeof AGENT_FEATURE_TYPES)[number];
 
@@ -160,6 +162,22 @@ const paymentConfig = z.object({
   pixKeyType: z.enum(["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]).optional(),
 });
 
+/// WhatsApp Flow (formulário). Status e primeira tela são conferidos na Meta
+/// ao salvar (agent-feature-service.ts); rascunho sai em modo "draft".
+const flowConfig = z.object({
+  flowId: z.string().trim().min(1, "Selecione o flow."),
+  flowName: z.string().trim().default(""),
+  wabaId: z.string().trim().default(""),
+  status: z.string().trim().default(""),
+  firstScreen: z.string().trim().default(""),
+  ctaText: z.string().trim().min(1, "Informe o texto do botão que abre o flow.").max(META_LIMITS.flowCta, maxChars(META_LIMITS.flowCta)),
+  bodyText: optionalText(1024),
+  headerText: optionalText(META_LIMITS.headerText),
+  footerText: optionalText(META_LIMITS.footerText),
+  /// Ligado: as respostas do formulário viram metadados do contato.
+  saveAsMetadata: z.boolean().default(false),
+});
+
 export const FEATURE_CONFIG_SCHEMAS: Record<AgentFeatureType, z.ZodTypeAny> = {
   CATALOG: catalogConfig,
   PRODUCT_CAROUSEL: productCarouselConfig,
@@ -171,6 +189,7 @@ export const FEATURE_CONFIG_SCHEMAS: Record<AgentFeatureType, z.ZodTypeAny> = {
   CONTEXTUAL_REPLY: z.object({}).passthrough().transform(() => ({})),
   LINK_PREVIEW: linkPreviewConfig,
   PAYMENT: paymentConfig,
+  FLOW: flowConfig,
 };
 
 export function isPromptRequired(type: AgentFeatureType): boolean {

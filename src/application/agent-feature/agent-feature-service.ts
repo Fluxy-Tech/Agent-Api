@@ -1,6 +1,7 @@
 import type { Prisma } from "../../../generated/prisma/client";
 import { ConflictError, NotFoundError, UpstreamError, ValidationError } from "../../domain/errors/app-error";
 import { prisma } from "../../infrastructure/database/prisma/client";
+import { getFlow, getFlowJson } from "../../infrastructure/meta/meta-business-client";
 import { listCatalogProducts } from "../../infrastructure/meta/meta-graph-client";
 import { createAgentFeatureMediaUploadUrl, createDownloadUrl } from "../../infrastructure/storage/s3-client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
@@ -26,6 +27,33 @@ function parseFeature(type: AgentFeatureType, prompt: string, config: Record<str
     throw new ValidationError(parsed.error.issues[0]?.message ?? "Configuração inválida.", parsed.error.flatten());
   }
   return parsed.data as Prisma.InputJsonValue;
+}
+
+/// Flow escolhido: confere na Meta (com o token de uma rede social do agente
+/// no mesmo WABA) que existe, está em rascunho ou publicado, e guarda o status
+/// e a primeira tela, usados no envio.
+async function resolveFlowConfig(agentId: string, organizationId: string, config: Record<string, unknown>) {
+  const flowId = String(config.flowId ?? "");
+  const channels = await prisma.channel.findMany({
+    where: { agentId, organizationId, ...(config.wabaId ? { wabaId: String(config.wabaId) } : {}), metaAccessToken: { not: null } },
+    select: { wabaId: true, metaAccessToken: true },
+  });
+  for (const channel of channels) {
+    const flow = await getFlow(flowId, channel.metaAccessToken!).catch(() => null);
+    if (!flow) continue;
+    if (flow.status !== "DRAFT" && flow.status !== "PUBLISHED") {
+      throw new ValidationError("Escolha um flow em rascunho ou publicado.");
+    }
+    const json = await getFlowJson(flowId, channel.metaAccessToken!).catch(() => null);
+    let firstScreen = "";
+    try {
+      firstScreen = (JSON.parse(json ?? "{}") as { screens?: { id?: string }[] }).screens?.[0]?.id ?? "";
+    } catch {
+      // JSON inválido: o envio cai na primeira tela que a Meta escolher.
+    }
+    return { ...config, flowName: flow.name, wabaId: channel.wabaId, status: flow.status, firstScreen };
+  }
+  throw new ValidationError("Flow não encontrado nas redes sociais deste agente.");
 }
 
 type FeatureRow = { type: string; config: Prisma.JsonValue };
@@ -69,7 +97,11 @@ export const agentFeatureService = {
         type: input.type,
         name: input.name,
         prompt: input.prompt,
-        config: parseFeature(input.type, input.prompt, input.config),
+        config: parseFeature(
+          input.type,
+          input.prompt,
+          input.type === "FLOW" ? await resolveFlowConfig(agent.id, agent.organizationId, input.config) : input.config,
+        ),
       },
     });
     return withPreviews(created);
@@ -82,7 +114,11 @@ export const agentFeatureService = {
       data: {
         name: input.name,
         prompt: input.prompt,
-        config: parseFeature(feature.type as AgentFeatureType, input.prompt, input.config),
+        config: parseFeature(
+          feature.type as AgentFeatureType,
+          input.prompt,
+          feature.type === "FLOW" ? await resolveFlowConfig(feature.agentId, user.activeOrganizationId!, input.config) : input.config,
+        ),
       },
     });
     return withPreviews(updated);

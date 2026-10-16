@@ -1,4 +1,5 @@
 import { ValidationError } from "../../domain/errors/app-error";
+import { prisma } from "../../infrastructure/database/prisma/client";
 import {
   createFlow,
   deleteFlow,
@@ -26,6 +27,21 @@ async function assertFlowOfChannel(user: AuthUser, channelId: string, flowId: st
 
 /// WhatsApp Flows do WABA da rede social — lidos e gerenciados direto na Meta
 /// (sem tabela própria: a Meta é a fonte da verdade).
+/// Funcionalidades "Formulário (Flow)" dos agentes guardam o status do flow
+/// (rascunho sai em modo draft; descontinuado/excluído deixa de ser enviado).
+async function syncAgentFeatures(user: AuthUser, flowId: string, status: string) {
+  const features = await prisma.agentFeature.findMany({
+    where: { type: "FLOW", config: { path: ["flowId"], equals: flowId }, agent: { organizationId: user.activeOrganizationId! } },
+    select: { id: true, config: true },
+  });
+  for (const feature of features) {
+    await prisma.agentFeature.update({
+      where: { id: feature.id },
+      data: { config: { ...(feature.config as Record<string, unknown>), status } },
+    });
+  }
+}
+
 export const whatsappFlowService = {
   async list(user: AuthUser, channelId: string) {
     const { wabaId, token } = await resolveChannelAccess(user, channelId);
@@ -58,12 +74,16 @@ export const whatsappFlowService = {
 
   async publish(user: AuthUser, channelId: string, flowId: string) {
     const { token } = await assertFlowOfChannel(user, channelId, flowId);
-    return publishFlow(flowId, token);
+    const result = await publishFlow(flowId, token);
+    await syncAgentFeatures(user, flowId, "PUBLISHED");
+    return result;
   },
 
   async deprecate(user: AuthUser, channelId: string, flowId: string) {
     const { token } = await assertFlowOfChannel(user, channelId, flowId);
-    return deprecateFlow(flowId, token);
+    const result = await deprecateFlow(flowId, token);
+    await syncAgentFeatures(user, flowId, "DEPRECATED");
+    return result;
   },
 
   async remove(user: AuthUser, channelId: string, flowId: string) {
@@ -71,6 +91,8 @@ export const whatsappFlowService = {
     if (flow.status !== "DRAFT") {
       throw new ValidationError("Só é possível excluir flows em rascunho. Flows publicados podem ser descontinuados.");
     }
-    return deleteFlow(flowId, token);
+    const result = await deleteFlow(flowId, token);
+    await syncAgentFeatures(user, flowId, "DELETED");
+    return result;
   },
 };
