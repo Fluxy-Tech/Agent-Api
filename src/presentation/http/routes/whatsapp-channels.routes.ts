@@ -8,6 +8,10 @@ import {
   updateWhatsappChannelSchema,
   wabaLookupSchema,
 } from "../../../application/whatsapp-channel/whatsapp-channel-validation";
+import { messageTemplateService } from "../../../application/message-template/message-template-service";
+import { createMessageTemplateSchema } from "../../../application/message-template/message-template-validation";
+import { whatsappFlowService } from "../../../application/whatsapp-flow/whatsapp-flow-service";
+import { saveWhatsappFlowSchema } from "../../../application/whatsapp-flow/whatsapp-flow-validation";
 import { PermissionAction } from "../../../domain/enums/permission-action";
 import { ValidationError } from "../../../domain/errors/app-error";
 import { apiHandler } from "../middlewares/api-handler";
@@ -71,6 +75,96 @@ whatsappChannelsRouter.get(
   "/:id/templates",
   apiHandler({ action: PermissionAction.CAMPAIGNS_VIEW }, async (req, _res, user) => {
     return whatsappChannelService.listTemplates(user, String(req.params.id));
+  }),
+);
+
+// ---------- TEMPLATES DE MENSAGEM (tela Campanhas › Templates) ----------
+
+whatsappChannelsRouter.get(
+  "/:id/message-templates",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_VIEW }, async (req, _res, user) => {
+    return messageTemplateService.list(user, String(req.params.id));
+  }),
+);
+
+whatsappChannelsRouter.post(
+  "/:id/message-templates",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const parsed = createMessageTemplateSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Dados inválidos.", parsed.error.flatten());
+
+    const result = await messageTemplateService.create(user, String(req.params.id), parsed.data);
+    await recordAudit(req, user, {
+      action: "MESSAGE_TEMPLATE_CREATED",
+      resourceType: "MessageTemplate",
+      resourceId: result.id,
+      afterState: { name: parsed.data.name, language: parsed.data.language, status: result.status },
+    });
+    return result;
+  }),
+);
+
+whatsappChannelsRouter.delete(
+  "/:id/message-templates/:templateId",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const name = String(req.query.name ?? "");
+    if (!name) throw new ValidationError("Informe o nome do template.");
+    return messageTemplateService.remove(user, String(req.params.id), String(req.params.templateId), name);
+  }),
+);
+
+// ---------- WHATSAPP FLOWS (Redes sociais › aba Flows) ----------
+
+whatsappChannelsRouter.get(
+  "/:id/flows",
+  apiHandler({ action: PermissionAction.WABAS_VIEW }, async (req, _res, user) => {
+    return whatsappFlowService.list(user, String(req.params.id));
+  }),
+);
+
+whatsappChannelsRouter.get(
+  "/:id/flows/:flowId",
+  apiHandler({ action: PermissionAction.WABAS_VIEW }, async (req, _res, user) => {
+    return whatsappFlowService.get(user, String(req.params.id), String(req.params.flowId));
+  }),
+);
+
+whatsappChannelsRouter.post(
+  "/:id/flows",
+  apiHandler({ action: PermissionAction.WABAS_WRITE }, async (req, _res, user) => {
+    const parsed = saveWhatsappFlowSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Dados inválidos.", parsed.error.flatten());
+    return whatsappFlowService.create(user, String(req.params.id), parsed.data);
+  }),
+);
+
+whatsappChannelsRouter.put(
+  "/:id/flows/:flowId",
+  apiHandler({ action: PermissionAction.WABAS_WRITE }, async (req, _res, user) => {
+    const parsed = saveWhatsappFlowSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Dados inválidos.", parsed.error.flatten());
+    return whatsappFlowService.update(user, String(req.params.id), String(req.params.flowId), parsed.data);
+  }),
+);
+
+whatsappChannelsRouter.post(
+  "/:id/flows/:flowId/publish",
+  apiHandler({ action: PermissionAction.WABAS_WRITE }, async (req, _res, user) => {
+    return whatsappFlowService.publish(user, String(req.params.id), String(req.params.flowId));
+  }),
+);
+
+whatsappChannelsRouter.post(
+  "/:id/flows/:flowId/deprecate",
+  apiHandler({ action: PermissionAction.WABAS_WRITE }, async (req, _res, user) => {
+    return whatsappFlowService.deprecate(user, String(req.params.id), String(req.params.flowId));
+  }),
+);
+
+whatsappChannelsRouter.delete(
+  "/:id/flows/:flowId",
+  apiHandler({ action: PermissionAction.WABAS_WRITE }, async (req, _res, user) => {
+    return whatsappFlowService.remove(user, String(req.params.id), String(req.params.flowId));
   }),
 );
 
