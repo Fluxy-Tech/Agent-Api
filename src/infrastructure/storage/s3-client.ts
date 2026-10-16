@@ -129,6 +129,27 @@ export async function headObject(s3Key: string): Promise<{ size: number; content
   }
 }
 
+/// Mídia das funcionalidades do agente (ex: cards do carrossel). O bucket não
+/// é público: a config guarda a chave e o Inbound-Service gera a URL assinada
+/// que vai pra Meta no envio. `previewUrl` (assinada, 1h) é só pro Console.
+export async function createAgentFeatureMediaUploadUrl(input: {
+  organizationId: string;
+  agentId: string;
+  fileName: string;
+  contentType: string;
+}): Promise<{ uploadUrl: string; s3Key: string; previewUrl: string }> {
+  const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const s3Key = `${env.SEAWEEDFS_S3_PREFIX}/agent-feature-media/${input.organizationId}/${input.agentId}/${Date.now()}-${safeFileName}`;
+
+  const uploadUrl = await getSignedUrl(
+    client,
+    new PutObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key, ContentType: input.contentType }),
+    { expiresIn: 300 },
+  );
+
+  return { uploadUrl, s3Key, previewUrl: await createDownloadUrl(s3Key) };
+}
+
 /// URL presignada de leitura (1h) — o bucket não precisa ser público.
 export function createDownloadUrl(s3Key: string): Promise<string> {
   return getSignedUrl(client, new GetObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key }), {

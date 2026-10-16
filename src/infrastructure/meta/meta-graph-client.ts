@@ -31,6 +31,65 @@ export async function listWabaPhoneNumbers(wabaId: string, accessToken: string):
   return body.data ?? [];
 }
 
+export interface MetaCatalog {
+  id: string;
+  name: string;
+}
+
+/// Catálogos (Commerce Manager) conectados ao WABA — exige que o token tenha
+/// a permissão catalog_management, além das de WhatsApp.
+export async function listWabaCatalogs(wabaId: string, accessToken: string): Promise<MetaCatalog[]> {
+  const url = `https://graph.facebook.com/${env.META_GRAPH_API_VERSION}/${wabaId}/product_catalogs?fields=id,name`;
+
+  const response = await fetch(`${url}&access_token=${encodeURIComponent(accessToken)}`);
+  const body = (await response.json()) as { data?: MetaCatalog[] } & MetaErrorResponse;
+
+  if (!response.ok) {
+    throw new UpstreamError(body.error?.message ?? "Falha ao consultar os catálogos do WABA na Meta.");
+  }
+
+  return body.data ?? [];
+}
+
+export interface MetaCatalogProduct {
+  retailerId: string;
+  name: string;
+  price: string | null;
+  imageUrl: string | null;
+  availability: string | null;
+}
+
+/// Produtos de um catálogo (até `limit`) — usado pra escolher os produtos do
+/// carrossel no Console.
+export async function listCatalogProducts(catalogId: string, accessToken: string, limit = 200): Promise<MetaCatalogProduct[]> {
+  const products: MetaCatalogProduct[] = [];
+  let url: string | undefined =
+    `https://graph.facebook.com/${env.META_GRAPH_API_VERSION}/${catalogId}/products?fields=retailer_id,name,price,image_url,availability&limit=100`;
+
+  while (url && products.length < limit) {
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const body = (await response.json()) as {
+      data?: { retailer_id?: string; name?: string; price?: string; image_url?: string; availability?: string }[];
+      paging?: { next?: string };
+    } & MetaErrorResponse;
+    if (!response.ok) throw new UpstreamError(body.error?.message ?? "Falha ao consultar os produtos do catálogo na Meta.");
+
+    for (const item of body.data ?? []) {
+      if (!item.retailer_id) continue;
+      products.push({
+        retailerId: item.retailer_id,
+        name: item.name ?? item.retailer_id,
+        price: item.price ?? null,
+        imageUrl: item.image_url ?? null,
+        availability: item.availability ?? null,
+      });
+    }
+    url = body.paging?.next;
+  }
+
+  return products.slice(0, limit);
+}
+
 export interface MetaPhoneNumberStatus {
   id: string;
   display_phone_number?: string;

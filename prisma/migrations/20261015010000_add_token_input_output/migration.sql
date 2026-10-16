@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Token" ADD COLUMN     "inputQuantity" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "outputQuantity" INTEGER NOT NULL DEFAULT 0;

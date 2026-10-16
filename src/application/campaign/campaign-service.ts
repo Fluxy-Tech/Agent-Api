@@ -465,6 +465,96 @@ export const campaignService = {
     return [...blockedOriginals];
   },
 
+  /// Checagem de segurança antes de um novo disparo (massa ou manual): além
+  /// dos bloqueados, aponta quem da lista está em atendimento humano (ticket
+  /// aberto) ou em outro disparo em andamento nesta mesma rede social — o
+  /// Console alerta e deixa o usuário remover esses contatos ou seguir.
+  /// Devolve sempre o telefone como veio do front, pra ele casar com a lista.
+  async checkContacts(user: AuthUser, whatsappChannelId: string, phones: string[]) {
+    const organizationId = user.activeOrganizationId!;
+    const channel = await prisma.channel.findFirst({ where: { id: whatsappChannelId, organizationId } });
+    if (!channel) throw new NotFoundError("WhatsApp Channel não encontrado.");
+
+    const normalizedToOriginal = new Map<string, string>();
+    for (const phone of phones) normalizedToOriginal.set(normalizeBrazilianWaId(phone), phone);
+    const waIds = [...normalizedToOriginal.keys()];
+
+    const [blockedPhones, tickets, pending, sent] = await Promise.all([
+      this.findBlockedPhones(user, channel.id, phones),
+      prisma.ticket.findMany({
+        where: {
+          organizationId,
+          status: { in: ["WAITING", "IN_PROGRESS"] },
+          target: { whatsappChannelId: channel.id, waId: { in: waIds } },
+        },
+        select: {
+          status: true,
+          queue: { select: { name: true } },
+          assignedUser: { select: { name: true } },
+          target: { select: { waId: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      // Ainda na fila do disparo escalonado — o telefone está cru no JSON, então
+      // aplica no SQL a mesma normalização de normalizeBrazilianWaId.
+      prisma.$queryRaw<{ waId: string; campaignId: string; campaignName: string; active: boolean }[]>`
+        SELECT DISTINCT ON (n."waId", c."id") n."waId", c."id" AS "campaignId", c."name" AS "campaignName", c."active"
+        FROM (
+          SELECT p."campaignId", regexp_replace(p."contact"->>'phone', '[^0-9]', '', 'g') AS d
+          FROM "CampaignPendingContact" p
+        ) raw
+        CROSS JOIN LATERAL (
+          SELECT CASE WHEN length(raw.d) = 12 AND raw.d LIKE '55%'
+                      THEN substr(raw.d, 1, 4) || '9' || substr(raw.d, 5)
+                      ELSE raw.d END AS "waId"
+        ) n
+        JOIN "Campaign" c ON c."id" = raw."campaignId"
+        WHERE c."whatsappChannelId" = ${channel.id}
+          AND c."status" = 'PROCESSING'
+          AND n."waId" = ANY(${waIds})
+      `,
+      // Já receberam o template de uma campanha que ainda não terminou.
+      prisma.campaignTarget.findMany({
+        where: {
+          campaign: { whatsappChannelId: channel.id, status: "PROCESSING" },
+          target: { waId: { in: waIds } },
+        },
+        select: { campaign: { select: { id: true, name: true, active: true } }, target: { select: { waId: true } } },
+      }),
+    ]);
+
+    const inService = new Map<
+      string,
+      { phone: string; name: string | null; status: "WAITING" | "IN_PROGRESS"; queueName: string; attendantName: string | null }
+    >();
+    for (const ticket of tickets) {
+      const phone = ticket.target.waId ? normalizedToOriginal.get(ticket.target.waId) : undefined;
+      if (!phone || inService.has(phone)) continue;
+      inService.set(phone, {
+        phone,
+        name: ticket.target.name,
+        status: ticket.status as "WAITING" | "IN_PROGRESS",
+        queueName: ticket.queue.name,
+        attendantName: ticket.assignedUser?.name ?? null,
+      });
+    }
+
+    const inCampaign = new Map<string, { phone: string; campaigns: { id: string; name: string; paused: boolean }[] }>();
+    const addCampaign = (waId: string | null, campaign: { id: string; name: string; active: boolean }) => {
+      const phone = waId ? normalizedToOriginal.get(waId) : undefined;
+      if (!phone) return;
+      const entry = inCampaign.get(phone) ?? { phone, campaigns: [] };
+      if (!entry.campaigns.some((c) => c.id === campaign.id)) {
+        entry.campaigns.push({ id: campaign.id, name: campaign.name, paused: !campaign.active });
+      }
+      inCampaign.set(phone, entry);
+    };
+    for (const row of pending) addCampaign(row.waId, { id: row.campaignId, name: row.campaignName, active: row.active });
+    for (const row of sent) addCampaign(row.target.waId, row.campaign);
+
+    return { blockedPhones, inService: [...inService.values()], inCampaign: [...inCampaign.values()] };
+  },
+
   async getById(user: AuthUser, id: string) {
     const campaign = await prisma.campaign.findFirst({
       where: { id, organizationId: user.activeOrganizationId! },

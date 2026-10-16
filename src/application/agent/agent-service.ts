@@ -2,6 +2,7 @@ import { AGENT_DEFAULT_MESSAGES, DEFAULT_AGENT_PERSONALITY } from "../../domain/
 import { NotFoundError, ValidationError } from "../../domain/errors/app-error";
 import { encryptToken } from "../../infrastructure/crypto/token-cipher";
 import { prisma } from "../../infrastructure/database/prisma/client";
+import { listWabaCatalogs } from "../../infrastructure/meta/meta-graph-client";
 import type { AuthUser } from "../../presentation/http/types/auth-user";
 import type { CreateAgentInput, ListAgentsQuery, UpdateAgentInput } from "./agent-validation";
 
@@ -32,6 +33,40 @@ export const agentService = {
       },
       orderBy: { createdAt: "desc" },
     });
+  },
+
+  /// Catálogos da Meta disponíveis para o agente: os conectados aos WABAs das
+  /// redes sociais vinculadas a ele (o envio sai pelo número do canal, então
+  /// só esses catálogos funcionam). Falha num canal não derruba os outros —
+  /// volta em `errors` pro Console explicar (ex: token sem catalog_management).
+  async listCatalogs(user: AuthUser, id: string) {
+    const agent = await this.getById(user, id);
+    const channels = await prisma.channel.findMany({
+      where: { agentId: agent.id, organizationId: user.activeOrganizationId! },
+      select: { wabaId: true, displayNumber: true, metaAccessToken: true },
+    });
+
+    const catalogs = new Map<string, { id: string; name: string }>();
+    const errors: string[] = [];
+    const seenWabas = new Set<string>();
+
+    for (const channel of channels) {
+      if (seenWabas.has(channel.wabaId)) continue;
+      seenWabas.add(channel.wabaId);
+      if (!channel.metaAccessToken) {
+        errors.push(`${channel.displayNumber}: rede social sem token da Meta cadastrado.`);
+        continue;
+      }
+      try {
+        for (const catalog of await listWabaCatalogs(channel.wabaId, channel.metaAccessToken)) {
+          catalogs.set(catalog.id, { id: catalog.id, name: catalog.name });
+        }
+      } catch (error) {
+        errors.push(`${channel.displayNumber}: ${error instanceof Error ? error.message : "falha ao consultar a Meta."}`);
+      }
+    }
+
+    return { catalogs: [...catalogs.values()], hasChannels: channels.length > 0, errors };
   },
 
   async getById(user: AuthUser, id: string) {
@@ -88,6 +123,11 @@ export const agentService = {
         personality: resolveToggleable(input.personality, DEFAULT_AGENT_PERSONALITY),
         ragEnabled: input.ragEnabled ?? false,
         ragChunkSize: input.ragChunkSize ?? null,
+
+        rgbsEnabled: input.rgbsEnabled ?? false,
+        timeSmall: input.timeSmall ?? 5,
+        timeMedium: input.timeMedium ?? 10,
+        timeLarge: input.timeLarge ?? 15,
 
         openaiTokenEncrypted: input.openaiToken ? encryptToken(input.openaiToken) : null,
         geminiTokenEncrypted: input.geminiToken ? encryptToken(input.geminiToken) : null,
@@ -148,6 +188,11 @@ export const agentService = {
         personality: input.personality ?? existing.personality,
         ragEnabled: input.ragEnabled ?? existing.ragEnabled,
         ragChunkSize: input.ragChunkSize === undefined ? existing.ragChunkSize : input.ragChunkSize,
+
+        rgbsEnabled: input.rgbsEnabled ?? existing.rgbsEnabled,
+        timeSmall: input.timeSmall ?? existing.timeSmall,
+        timeMedium: input.timeMedium ?? existing.timeMedium,
+        timeLarge: input.timeLarge ?? existing.timeLarge,
 
         // Ausente/vazio = mantém o token já salvo — não existe forma de
         // "limpar" um token por essa rota, só sobrescrever com um novo (mesmo

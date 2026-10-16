@@ -8,9 +8,14 @@ import type { RecordTokensInput } from "./agent-token-validation";
 
 type Origin = "OPENAI" | "ADK";
 type OriginTotals = Record<Origin, number>;
+type InputOutput = { input: number; output: number };
 
 function emptyTotals(): OriginTotals {
   return { OPENAI: 0, ADK: 0 };
+}
+
+function emptyBreakdown(): Record<Origin, InputOutput> {
+  return { OPENAI: { input: 0, output: 0 }, ADK: { input: 0, output: 0 } };
 }
 
 /// Agregado no Postgres (não linha a linha) — é uma linha de Token por
@@ -20,9 +25,13 @@ async function aggregate(organizationId: string, period: SeriesPeriod, agentId?:
   const { start, end, granularity } = resolveSeriesWindow(period);
   const format = granularity === "day" ? "YYYY-MM-DD" : "YYYY-MM";
 
-  const rows = await prisma.$queryRaw<{ date: string; agentId: string; origin: Origin; total: bigint }[]>`
+  const rows = await prisma.$queryRaw<
+    { date: string; agentId: string; origin: Origin; total: bigint; input: bigint; output: bigint }[]
+  >`
     SELECT to_char(t."createdAt", ${format}) AS date, t."agentId", t."origin"::text AS origin,
-           SUM(t."quantity")::bigint AS total
+           SUM(t."quantity")::bigint AS total,
+           SUM(t."inputQuantity")::bigint AS input,
+           SUM(t."outputQuantity")::bigint AS output
     FROM "Token" t
     JOIN "Agent" a ON a."id" = t."agentId"
     WHERE a."organizationId" = ${organizationId}
@@ -32,12 +41,15 @@ async function aggregate(organizationId: string, period: SeriesPeriod, agentId?:
   `;
 
   const byOrigin = emptyTotals();
+  const breakdown = emptyBreakdown();
   const byDate = new Map<string, OriginTotals>();
   const byAgent = new Map<string, OriginTotals>();
 
   for (const row of rows) {
     const total = Number(row.total);
     byOrigin[row.origin] += total;
+    breakdown[row.origin].input += Number(row.input);
+    breakdown[row.origin].output += Number(row.output);
 
     const date = byDate.get(row.date) ?? emptyTotals();
     date[row.origin] += total;
@@ -53,6 +65,7 @@ async function aggregate(organizationId: string, period: SeriesPeriod, agentId?:
     granularity,
     total: byOrigin.OPENAI + byOrigin.ADK,
     byOrigin,
+    breakdown,
     byAgent,
     points: buildBucketKeys(start, end, granularity).map((date) => ({ date, ...(byDate.get(date) ?? emptyTotals()) })),
   };
@@ -64,7 +77,15 @@ export const agentTokenService = {
     const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { id: true } });
     if (!agent) throw new NotFoundError("Agente não encontrado.");
 
-    return prisma.token.create({ data: { agentId: agent.id, quantity: input.quantity, origin: input.origin } });
+    return prisma.token.create({
+      data: {
+        agentId: agent.id,
+        quantity: input.quantity,
+        inputQuantity: input.inputQuantity ?? 0,
+        outputQuantity: input.outputQuantity ?? 0,
+        origin: input.origin,
+      },
+    });
   },
 
   /// Consumo da empresa inteira no período, com o detalhamento por agente.

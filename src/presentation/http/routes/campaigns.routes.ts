@@ -61,6 +61,18 @@ campaignsRouter.post(
   }),
 );
 
+/// Checagem completa antes do disparo: bloqueados + em atendimento + em
+/// outro disparo em andamento nesta rede social.
+campaignsRouter.post(
+  "/contact-check",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const parsed = checkBlockedContactsSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Dados inválidos.", parsed.error.flatten());
+
+    return campaignService.checkContacts(user, parsed.data.whatsappChannelId, parsed.data.phones);
+  }),
+);
+
 campaignsRouter.post(
   "/",
   apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {

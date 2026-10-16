@@ -1,5 +1,11 @@
 import { Router } from "express";
 import { agentService } from "../../../application/agent/agent-service";
+import { agentFeatureService } from "../../../application/agent-feature/agent-feature-service";
+import {
+  createAgentFeatureSchema,
+  presignFeatureMediaSchema,
+  updateAgentFeatureSchema,
+} from "../../../application/agent-feature/agent-feature-validation";
 import { createAgentSchema, listAgentsQuerySchema, updateAgentSchema } from "../../../application/agent/agent-validation";
 import { agentTokenService } from "../../../application/agent-token/agent-token-service";
 import { agentFunctionService } from "../../../application/agent-function/agent-function-service";
@@ -130,6 +136,70 @@ agentsRouter.delete(
     });
 
     return sanitizeAgent(agent);
+  }),
+);
+
+/// Catálogos da Meta conectados às redes sociais deste agente — alimenta o
+/// seletor do card "Catálogo" na aba "Função".
+agentsRouter.get(
+  "/:id/catalogs",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentService.listCatalogs(user, String(req.params.id));
+  }),
+);
+
+/// Produtos de um catálogo — escolha manual dos cards do carrossel de produtos.
+agentsRouter.get(
+  "/:id/catalogs/:catalogId/products",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentFeatureService.listCatalogProducts(user, String(req.params.id), String(req.params.catalogId));
+  }),
+);
+
+// ---------- FUNCIONALIDADES DE MENSAGEM (aba "Função") ----------
+
+agentsRouter.get(
+  "/:id/features",
+  apiHandler({ action: PermissionAction.AGENTS_VIEW }, async (req, _res, user) => {
+    return agentFeatureService.list(user, String(req.params.id));
+  }),
+);
+
+agentsRouter.post(
+  "/:id/features",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = createAgentFeatureSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Dados inválidos.", parsed.error.flatten());
+
+    return agentFeatureService.create(user, String(req.params.id), parsed.data);
+  }),
+);
+
+/// Antes de "/:id/features/:featureId" — senão "media" casaria como featureId.
+agentsRouter.post(
+  "/:id/features/media/presign",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = presignFeatureMediaSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Use imagem JPG/PNG ou vídeo MP4.", parsed.error.flatten());
+
+    return agentFeatureService.presignMedia(user, String(req.params.id), parsed.data);
+  }),
+);
+
+agentsRouter.put(
+  "/:id/features/:featureId",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    const parsed = updateAgentFeatureSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.issues[0]?.message ?? "Dados inválidos.", parsed.error.flatten());
+
+    return agentFeatureService.update(user, String(req.params.id), String(req.params.featureId), parsed.data);
+  }),
+);
+
+agentsRouter.delete(
+  "/:id/features/:featureId",
+  apiHandler({ action: PermissionAction.AGENTS_WRITE }, async (req, _res, user) => {
+    return agentFeatureService.remove(user, String(req.params.id), String(req.params.featureId));
   }),
 );
 
