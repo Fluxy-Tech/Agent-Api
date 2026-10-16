@@ -9,7 +9,7 @@ import {
   wabaLookupSchema,
 } from "../../../application/whatsapp-channel/whatsapp-channel-validation";
 import { messageTemplateService } from "../../../application/message-template/message-template-service";
-import { createMessageTemplateSchema } from "../../../application/message-template/message-template-validation";
+import { createMessageTemplateSchema, presignTemplateMediaSchema } from "../../../application/message-template/message-template-validation";
 import { whatsappFlowService } from "../../../application/whatsapp-flow/whatsapp-flow-service";
 import { saveWhatsappFlowSchema } from "../../../application/whatsapp-flow/whatsapp-flow-validation";
 import { PermissionAction } from "../../../domain/enums/permission-action";
@@ -101,6 +101,18 @@ whatsappChannelsRouter.post(
       afterState: { name: parsed.data.name, language: parsed.data.language, status: result.status },
     });
     return result;
+  }),
+);
+
+/// Mídia de exemplo do cabeçalho (imagem, vídeo ou PDF): o navegador sobe
+/// direto pro S3 e o POST do template repassa pra Meta.
+whatsappChannelsRouter.post(
+  "/:id/message-templates/media/presign",
+  apiHandler({ action: PermissionAction.CAMPAIGNS_WRITE }, async (req, _res, user) => {
+    const parsed = presignTemplateMediaSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError("Arquivo inválido.", parsed.error.flatten());
+
+    return messageTemplateService.presignMedia(user, String(req.params.id), parsed.data);
   }),
 );
 

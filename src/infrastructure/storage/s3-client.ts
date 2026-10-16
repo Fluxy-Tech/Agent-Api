@@ -187,3 +187,41 @@ export async function createImageUploadUrl(input: {
 
   return { uploadUrl, s3Key };
 }
+
+/// Prefixo das mídias de exemplo dos templates de mensagem — por empresa e
+/// rede social. Valida (message-template-service.ts) que a chave enviada no
+/// template é mesmo desta rede social.
+export function templateMediaKeyPrefix(organizationId: string, channelId: string): string {
+  return `${env.SEAWEEDFS_S3_PREFIX}/template-media/${organizationId}/${channelId}/`;
+}
+
+/// URL presignada de PUT pra mídia do cabeçalho de um template ir direto do
+/// navegador pro S3. O Agent-Api depois lê o arquivo e manda pra Meta.
+export async function createTemplateMediaUploadUrl(input: {
+  organizationId: string;
+  channelId: string;
+  fileName: string;
+  contentType: string;
+}): Promise<{ uploadUrl: string; s3Key: string; previewUrl: string }> {
+  const safeFileName = input.fileName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const s3Key = `${templateMediaKeyPrefix(input.organizationId, input.channelId)}${Date.now()}-${safeFileName}`;
+
+  const uploadUrl = await getSignedUrl(
+    client,
+    new PutObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key, ContentType: input.contentType }),
+    { expiresIn: 300 },
+  );
+
+  return { uploadUrl, s3Key, previewUrl: await createDownloadUrl(s3Key) };
+}
+
+/// Conteúdo de um objeto (pra repassar a outro serviço). null quando não existe.
+export async function readObject(s3Key: string): Promise<{ bytes: Uint8Array; contentType: string | null } | null> {
+  try {
+    const object = await client.send(new GetObjectCommand({ Bucket: env.SEAWEEDFS_S3_BUCKET, Key: s3Key }));
+    if (!object.Body) return null;
+    return { bytes: await object.Body.transformToByteArray(), contentType: object.ContentType ?? null };
+  } catch {
+    return null;
+  }
+}

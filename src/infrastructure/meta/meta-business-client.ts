@@ -67,6 +67,42 @@ export function createTemplate(wabaId: string, token: string, body: Record<strin
   });
 }
 
+const appIdByToken = new Map<string, string>();
+
+/// App da Meta dono do token (o upload de mídia é feito no app, não no WABA).
+async function appIdOf(token: string): Promise<string> {
+  const cached = appIdByToken.get(token);
+  if (cached) return cached;
+  const debug = await graph<{ data?: { app_id?: string } }>(`debug_token?input_token=${encodeURIComponent(token)}`, token);
+  const appId = debug.data?.app_id;
+  if (!appId) throw new UpstreamError("Não foi possível identificar o app da Meta deste token.");
+  appIdByToken.set(token, appId);
+  return appId;
+}
+
+/// Upload retomável da Meta: a mídia de exemplo do cabeçalho do template vira
+/// um handle ("4::...") que vai em example.header_handle.
+export async function uploadTemplateMedia(token: string, file: { bytes: Uint8Array; fileName: string; contentType: string }) {
+  const appId = await appIdOf(token);
+  const query = new URLSearchParams({
+    file_name: file.fileName,
+    file_length: String(file.bytes.byteLength),
+    file_type: file.contentType,
+  });
+  const session = await graph<{ id: string }>(`${appId}/uploads?${query}`, token, { method: "POST" });
+
+  const response = await fetch(`${base()}/${session.id}`, {
+    method: "POST",
+    headers: { Authorization: `OAuth ${token}`, file_offset: "0", "Content-Type": "application/octet-stream" },
+    body: file.bytes,
+  });
+  const body = (await response.json().catch(() => ({}))) as { h?: string } & MetaError;
+  if (!response.ok || !body.h) {
+    throw new UpstreamError(body.error?.error_user_msg || body.error?.message || "A Meta não aceitou o arquivo do cabeçalho.");
+  }
+  return body.h;
+}
+
 /// hsm_id + name apaga só aquele idioma; só name apagaria todos os idiomas.
 export function deleteTemplate(wabaId: string, token: string, templateId: string, name: string) {
   const query = new URLSearchParams({ hsm_id: templateId, name });

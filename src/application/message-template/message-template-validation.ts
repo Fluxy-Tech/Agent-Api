@@ -8,7 +8,28 @@ export const TEMPLATE_LIMITS = {
   buttonText: 25,
   buttons: 10,
   copyCode: 15,
+  otpButtonText: 25,
 } as const;
+
+/// Formatos aceitos pela Meta como mídia de exemplo do cabeçalho. O documento
+/// fica limitado a 20 MB aqui (a Meta aceita mais), porque o Agent-Api lê o
+/// arquivo inteiro antes de repassar.
+export const TEMPLATE_MEDIA = {
+  IMAGE: { contentTypes: ["image/jpeg", "image/png"], maxBytes: 5 * 1024 * 1024, label: "imagem JPG ou PNG de até 5 MB" },
+  VIDEO: { contentTypes: ["video/mp4"], maxBytes: 16 * 1024 * 1024, label: "vídeo MP4 de até 16 MB" },
+  DOCUMENT: { contentTypes: ["application/pdf"], maxBytes: 20 * 1024 * 1024, label: "PDF de até 20 MB" },
+} as const satisfies Record<string, { contentTypes: readonly string[]; maxBytes: number; label: string }>;
+
+export type TemplateMediaFormat = keyof typeof TEMPLATE_MEDIA;
+
+export const presignTemplateMediaSchema = z.object({
+  format: z.enum(["IMAGE", "VIDEO", "DOCUMENT"]),
+  fileName: z.string().trim().min(1).max(200),
+  contentType: z.string().trim().min(1),
+  size: z.number().int().positive(),
+});
+
+export type PresignTemplateMediaInput = z.infer<typeof presignTemplateMediaSchema>;
 
 const maxChars = (max: number) => `Use no máximo ${max} caracteres.`;
 
@@ -54,21 +75,29 @@ function checkVariables(text: string, examples: string[], label: string, ctx: z.
   }
 }
 
-export const createMessageTemplateSchema = z
+const nameSchema = z
+  .string()
+  .trim()
+  .min(1, "Informe o nome do template.")
+  .max(512)
+  .regex(/^[a-z0-9_]+$/, "Use só letras minúsculas, números e _ no nome (ex.: boas_vindas_2).");
+
+const languageSchema = z.string().trim().min(2).max(10);
+
+const standardTemplateSchema = z
   .object({
-    name: z
-      .string()
-      .trim()
-      .min(1, "Informe o nome do template.")
-      .max(512)
-      .regex(/^[a-z0-9_]+$/, "Use só letras minúsculas, números e _ no nome (ex.: boas_vindas_2)."),
+    name: nameSchema,
     category: z.enum(["MARKETING", "UTILITY"]),
-    language: z.string().trim().min(2).max(10),
+    language: languageSchema,
     header: z
       .object({
-        format: z.enum(["NONE", "TEXT"]).default("NONE"),
+        format: z.enum(["NONE", "TEXT", "IMAGE", "VIDEO", "DOCUMENT"]).default("NONE"),
         text: z.string().trim().max(TEMPLATE_LIMITS.header, maxChars(TEMPLATE_LIMITS.header)).default(""),
         example: z.string().trim().default(""),
+        /// Mídia de exemplo enviada pelo Console (chave no S3)...
+        mediaKey: z.string().trim().optional(),
+        /// ...ou a mídia de exemplo de um template clonado (link da Meta).
+        sourceUrl: z.string().trim().url().optional(),
       })
       .default({ format: "NONE", text: "", example: "" }),
     body: z.object({
@@ -88,6 +117,8 @@ export const createMessageTemplateSchema = z
       } else if (vars.length === 1 && !t.header.example) {
         ctx.addIssue({ code: "custom", path: ["header"], message: "Preencha o exemplo da variável do cabeçalho." });
       }
+    } else if (t.header.format !== "NONE" && !t.header.mediaKey && !t.header.sourceUrl) {
+      ctx.addIssue({ code: "custom", path: ["header"], message: "Envie o arquivo de exemplo do cabeçalho." });
     }
     for (const [i, b] of t.buttons.entries()) {
       if (b.type === "URL" && /\{\{\s*1\s*\}\}$/.test(b.url) && !b.example) {
@@ -102,10 +133,79 @@ export const createMessageTemplateSchema = z
     }
   });
 
+const expirationMessage = "A validade do código vai de 1 a 90 minutos.";
+
+/// Autenticação: o texto é fixo da Meta ("*123456* é seu código de
+/// verificação."); dá pra escolher o aviso de segurança, a validade e o botão.
+const authenticationTemplateSchema = z
+  .object({
+    name: nameSchema,
+    category: z.literal("AUTHENTICATION"),
+    language: languageSchema,
+    authentication: z.object({
+      addSecurityRecommendation: z.boolean().default(true),
+      codeExpirationMinutes: z.number().int().min(1, expirationMessage).max(90, expirationMessage).nullable().default(null),
+      otpType: z.enum(["COPY_CODE", "ONE_TAP", "ZERO_TAP"]).default("COPY_CODE"),
+      buttonText: z.string().trim().max(TEMPLATE_LIMITS.otpButtonText, maxChars(TEMPLATE_LIMITS.otpButtonText)).default(""),
+      autofillText: z.string().trim().max(TEMPLATE_LIMITS.otpButtonText, maxChars(TEMPLATE_LIMITS.otpButtonText)).default(""),
+      packageName: z.string().trim().default(""),
+      signatureHash: z.string().trim().default(""),
+      zeroTapTermsAccepted: z.boolean().default(false),
+    }),
+  })
+  .superRefine((t, ctx) => {
+    const a = t.authentication;
+    if (a.otpType === "COPY_CODE") return;
+    if (!/^[a-zA-Z]\w*(\.[a-zA-Z]\w*)+$/.test(a.packageName)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authentication", "packageName"],
+        message: "Informe o nome do pacote do app Android (ex.: com.empresa.app).",
+      });
+    }
+    if (a.signatureHash.length !== 11) {
+      ctx.addIssue({ code: "custom", path: ["authentication", "signatureHash"], message: "O hash de assinatura do app tem 11 caracteres." });
+    }
+    if (a.otpType === "ZERO_TAP" && !a.zeroTapTermsAccepted) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["authentication", "zeroTapTermsAccepted"],
+        message: "Aceite os termos do preenchimento automático para usar esse botão.",
+      });
+    }
+  });
+
+export const createMessageTemplateSchema = z.discriminatedUnion("category", [standardTemplateSchema, authenticationTemplateSchema]);
+
 export type CreateMessageTemplateInput = z.infer<typeof createMessageTemplateSchema>;
+export type AuthenticationTemplateInput = z.infer<typeof authenticationTemplateSchema>;
+
+function toMetaAuthenticationTemplate(input: AuthenticationTemplateInput) {
+  const a = input.authentication;
+  const button: Record<string, unknown> = { type: "OTP", otp_type: a.otpType };
+  if (a.buttonText) button.text = a.buttonText;
+  if (a.otpType !== "COPY_CODE") {
+    if (a.autofillText) button.autofill_text = a.autofillText;
+    button.supported_apps = [{ package_name: a.packageName, signature_hash: a.signatureHash }];
+    if (a.otpType === "ZERO_TAP") button.zero_tap_terms_accepted = true;
+  }
+  return {
+    name: input.name,
+    category: input.category,
+    language: input.language,
+    components: [
+      { type: "BODY", add_security_recommendation: a.addSecurityRecommendation },
+      ...(a.codeExpirationMinutes ? [{ type: "FOOTER", code_expiration_minutes: a.codeExpirationMinutes }] : []),
+      { type: "BUTTONS", buttons: [button] },
+    ],
+  };
+}
 
 /// Converte o formulário do Console no formato `components` da Meta.
-export function toMetaTemplate(input: CreateMessageTemplateInput) {
+/// `headerHandle` é o handle do upload da mídia de exemplo do cabeçalho.
+export function toMetaTemplate(input: CreateMessageTemplateInput, headerHandle?: string) {
+  if (input.category === "AUTHENTICATION") return toMetaAuthenticationTemplate(input);
+
   const components: Record<string, unknown>[] = [];
 
   if (input.header.format === "TEXT") {
@@ -115,6 +215,8 @@ export function toMetaTemplate(input: CreateMessageTemplateInput) {
       text: input.header.text,
       ...(variablesOf(input.header.text).length ? { example: { header_text: [input.header.example] } } : {}),
     });
+  } else if (input.header.format !== "NONE") {
+    components.push({ type: "HEADER", format: input.header.format, example: { header_handle: [headerHandle] } });
   }
 
   const bodyVars = new Set(variablesOf(input.body.text)).size;
