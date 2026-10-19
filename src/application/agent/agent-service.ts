@@ -163,6 +163,8 @@ export const agentService = {
         timeMedium: input.timeMedium ?? 10,
         timeLarge: input.timeLarge ?? 15,
 
+        limitHistoryToAgent: input.limitHistoryToAgent ?? 6,
+
         openaiTokenEncrypted: input.openaiToken ? encryptToken(input.openaiToken) : null,
         geminiTokenEncrypted: input.geminiToken ? encryptToken(input.geminiToken) : null,
       },
@@ -227,6 +229,8 @@ export const agentService = {
         timeSmall: input.timeSmall ?? existing.timeSmall,
         timeMedium: input.timeMedium ?? existing.timeMedium,
         timeLarge: input.timeLarge ?? existing.timeLarge,
+
+        limitHistoryToAgent: input.limitHistoryToAgent ?? existing.limitHistoryToAgent,
 
         // Ausente/vazio = mantém o token já salvo — não existe forma de
         // "limpar" um token por essa rota, só sobrescrever com um novo (mesmo
