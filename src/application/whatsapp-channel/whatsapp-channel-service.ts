@@ -222,6 +222,7 @@ export const whatsappChannelService = {
           input.resetMessage === undefined ? existing.resetMessage : input.resetMessage || null,
         wordsToBlockCampaign: input.wordsToBlockCampaign ?? existing.wordsToBlockCampaign,
         useWordsToBlockCampaign: input.useWordsToBlockCampaign ?? existing.useWordsToBlockCampaign,
+        messageWaitSeconds: input.messageWaitSeconds ?? existing.messageWaitSeconds,
       },
       include: { serviceIsland: true },
     });

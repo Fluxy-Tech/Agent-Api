@@ -537,6 +537,12 @@ model Channel {
   /// Configurações de campanhas.
   useWordsToBlockCampaign Boolean  @default(false)
 
+  /// Tempo (segundos) de aguardo de mensagem: janela de agrupamento do
+  /// Inbound-Service que junta as mensagens de texto seguidas do contato num
+  /// lote só antes de mandar pro agente. Reinicia a cada mensagem nova (ver
+  /// Inbound-Service/src/application/webhook/debounce-service.ts).
+  messageWaitSeconds Int @default(10)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

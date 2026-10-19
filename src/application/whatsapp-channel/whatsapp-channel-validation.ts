@@ -67,6 +67,14 @@ export const updateWhatsappChannelSchema = createWhatsappChannelSchema.partial()
   wordsToBlockCampaign: z.array(z.string().trim().min(1)).optional(),
   /// Liga/desliga a avaliação de wordsToBlockCampaign para este canal.
   useWordsToBlockCampaign: z.boolean().optional(),
+  /// Tempo de aguardo de mensagem em segundos (ver Channel.messageWaitSeconds
+  /// no schema) — janela que agrupa as mensagens seguidas do contato.
+  messageWaitSeconds: z
+    .number()
+    .int("O tempo de aguardo deve ser um número inteiro de segundos.")
+    .min(1, "O tempo de aguardo de mensagem é de no mínimo 1 segundo.")
+    .max(120, "O tempo de aguardo de mensagem é de no máximo 120 segundos.")
+    .optional(),
 });
 
 export const wabaLookupSchema = z.object({

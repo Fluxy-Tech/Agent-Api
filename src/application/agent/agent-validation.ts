@@ -29,9 +29,9 @@ export const createAgentSchema = z.object({
   /// RGBS — quebra a resposta em várias mensagens ([QB]) e espera, antes de
   /// cada uma, o tempo (segundos) da faixa de tamanho dela.
   rgbsEnabled: z.boolean().optional(),
-  timeSmall: z.number().int().min(5, "O tempo para mensagens pequenas é de no mínimo 5 segundos.").max(300).optional(),
-  timeMedium: z.number().int().min(10, "O tempo para mensagens médias é de no mínimo 10 segundos.").max(300).optional(),
-  timeLarge: z.number().int().min(15, "O tempo para mensagens grandes é de no mínimo 15 segundos.").max(300).optional(),
+  timeSmall: z.number().int().min(1, "O tempo para mensagens pequenas é de no mínimo 1 segundo.").max(300).optional(),
+  timeMedium: z.number().int().min(4, "O tempo para mensagens médias é de no mínimo 4 segundos.").max(300).optional(),
+  timeLarge: z.number().int().min(8, "O tempo para mensagens grandes é de no mínimo 8 segundos.").max(300).optional(),
 
   /// Em claro aqui só nesta requisição — cifrados antes de gravar (ver
   /// agent-service.ts). Ausente/vazio = mantém o token já salvo, nunca limpa.
