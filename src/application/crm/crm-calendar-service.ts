@@ -84,8 +84,9 @@ export async function updateCalendarEventForTarget(
 /// de 30 min um do outro).
 const EVENT_SLOT_MS = 30 * 60 * 1000;
 
-/// Função CALENDAR_EVENT do agente de IA: agenda (ou remarca `eventId`) um
-/// evento do Target num horário livre.
+/// Função CALENDAR_EVENT do agente de IA: agenda (ou remarca `eventId`, que
+/// passa a RESCHEDULED) um evento do Target num horário livre. Evento
+/// cancelado não volta: o agente agenda um novo.
 /// - Com CrmSettings.calendarVisibleToAgent ligado e usuários permitidos:
 ///   escolhe um desses usuários sem outro evento no horário (o com menos
 ///   eventos no dia; na remarcação, mantém o atual se ele seguir livre) e
@@ -105,6 +106,7 @@ export async function scheduleCalendarEventForTarget(
     const event = await prisma.calendarEvent.findFirst({ where: { id: input.eventId, targetId: target.id } });
     if (!event) throw new NotFoundError("Evento não encontrado.");
     if (event.isClosed) throw new ValidationError("Evento encerrado — não pode mais ser alterado.");
+    if (event.status === "CANCELED") throw new ValidationError("Evento cancelado — agende um novo evento.");
     existing = { id: event.id, userId: event.userId };
   }
 
@@ -166,7 +168,11 @@ export async function scheduleCalendarEventForTarget(
     userId,
   };
   const event = existing
-    ? await prisma.calendarEvent.update({ where: { id: existing.id }, data, include: { user: { select: { id: true, name: true } } } })
+    ? await prisma.calendarEvent.update({
+        where: { id: existing.id },
+        data: { ...data, status: "RESCHEDULED" },
+        include: { user: { select: { id: true, name: true } } },
+      })
     : await prisma.calendarEvent.create({
         data: { ...data, calendarOrganizationId: calendar.id, targetId: target.id },
         include: { user: { select: { id: true, name: true } } },
@@ -175,10 +181,24 @@ export async function scheduleCalendarEventForTarget(
   return { event, rescheduled: !!existing };
 }
 
+/// Função CALENDAR_EVENT do agente de IA: o contato desmarca um evento dele.
+/// Não apaga — vira CANCELED (some do horário ocupado e fica no histórico da
+/// tela). Só eventos futuros e não encerrados.
+export async function cancelCalendarEventForTarget(targetId: string, eventId: string) {
+  const event = await prisma.calendarEvent.findFirst({ where: { id: eventId, targetId } });
+  if (!event) throw new NotFoundError("Evento não encontrado.");
+  if (event.isClosed) throw new ValidationError("Evento encerrado — não pode mais ser alterado.");
+  if (event.status === "CANCELED") return event;
+  if (event.dateEvent.getTime() < Date.now()) throw new ValidationError("Esse evento já passou — não dá para desmarcar.");
+
+  return prisma.calendarEvent.update({ where: { id: event.id }, data: { status: "CANCELED" } });
+}
+
 /// Eventos da empresa do Target dentro de [from, to] — pro agente de IA saber
 /// o que o contato já tem marcado e quais horários já estão ocupados. Eventos
 /// de OUTROS contatos voltam só com data/status (sem nome nem descrição), pra
-/// o agente nunca repassar dado de um lead pra outro.
+/// o agente nunca repassar dado de um lead pra outro. Os do próprio contato
+/// levam o responsável, pro agente dizer com quem é.
 export async function listCalendarEventsForTarget(targetId: string, from: Date, to: Date) {
   if (to.getTime() < from.getTime()) throw new ValidationError("A data final precisa ser depois da inicial.");
   if (to.getTime() - from.getTime() > MAX_RANGE_MS) throw new ValidationError("Período muito longo (máx. 62 dias).");
@@ -189,7 +209,16 @@ export async function listCalendarEventsForTarget(targetId: string, from: Date, 
 
   const events = await prisma.calendarEvent.findMany({
     where: { calendarOrganizationId: calendar.id, dateEvent: { gte: from, lte: to } },
-    select: { id: true, targetId: true, name: true, description: true, dateEvent: true, status: true, isClosed: true },
+    select: {
+      id: true,
+      targetId: true,
+      name: true,
+      description: true,
+      dateEvent: true,
+      status: true,
+      isClosed: true,
+      user: { select: { name: true } },
+    },
     orderBy: { dateEvent: "asc" },
   });
 
@@ -203,6 +232,7 @@ export async function listCalendarEventsForTarget(targetId: string, from: Date, 
         dateEvent: e.dateEvent,
         status: e.status,
         isClosed: e.isClosed,
+        responsible: e.user?.name ?? null,
       })),
     busySlots: events
       .filter((e) => e.targetId !== target.id && e.status !== "CANCELED")

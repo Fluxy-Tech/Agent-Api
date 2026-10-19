@@ -4,6 +4,7 @@ import { agentTokenService } from "../../../application/agent-token/agent-token-
 import { recordTokensSchema } from "../../../application/agent-token/agent-token-validation";
 import { campaignService } from "../../../application/campaign/campaign-service";
 import {
+  cancelCalendarEventForTarget,
   createCalendarEventForTarget,
   listCalendarEventsForTarget,
   scheduleCalendarEventForTarget,
@@ -391,6 +392,17 @@ internalRouter.patch("/targets/:id/calendar-events/:eventId", async (req, res) =
     res.json({ success: true, result: event, message: null });
   } catch (error) {
     sendAppError(res, error, "Falha ao atualizar evento.");
+  }
+});
+
+/// Função CALENDAR_EVENT do agente de IA: o contato desmarca um evento dele
+/// (status CANCELED, o evento não é apagado).
+internalRouter.post("/targets/:id/calendar-events/:eventId/cancel", async (req, res) => {
+  try {
+    const event = await cancelCalendarEventForTarget(String(req.params.id), String(req.params.eventId));
+    res.json({ success: true, result: event, message: null });
+  } catch (error) {
+    sendAppError(res, error, "Falha ao desmarcar evento.");
   }
 });
 
